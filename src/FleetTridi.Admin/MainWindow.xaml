@@ -29,7 +29,7 @@
                 <TextBlock Text="Servidor" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <TextBox x:Name="ServerBox" Width="290" Text="http://localhost:8787" Margin="0,0,8,0" Padding="7"/>
                 <TextBox x:Name="UserBox" Width="130" Text="nanamicode" Margin="0,0,8,0" Padding="7"/>
-                <PasswordBox x:Name="PassBox" Width="145" Password="veralucia12" Margin="0,0,8,0" Padding="7"/>
+                <PasswordBox x:Name="PassBox" Width="145" Margin="0,0,8,0" Padding="7"/>
                 <Button Content="Entrar / Atualizar" Click="Login_Click" Padding="16,8"/>
                 <TextBlock x:Name="OnlineCount" Margin="18,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold"/>
             </StackPanel>
