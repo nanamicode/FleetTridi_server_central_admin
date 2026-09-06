@@ -171,6 +171,7 @@ class FleetService: Service() {
                 .put("agentVersion", BuildConfig.VERSION_NAME)
                 .put("privilegeMode", privilegeMode)
                 .put("rootAvailable", privilegeMode == "su-root")
+                .put("serverUrl", server)
                 .put("secureTransport", server.startsWith("https://", true))
                 .put("audiencePackage", pkg)
                 .put("audienceVersion", packageVersion(pkg))
