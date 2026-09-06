@@ -142,6 +142,7 @@
                                 <TextBox x:Name="ReleaseVersionBox" Grid.Column="0" Margin="0,0,4,6" Padding="7" Text="1.0.0"/>
                                 <TextBox x:Name="ReleaseChannelBox" Grid.Column="1" Margin="4,0,0,6" Padding="7" Text="stable"/>
                             </Grid>
+                            <TextBox x:Name="ReleasePackageBox" Padding="7" Margin="0,0,0,6" Text="com.tridi.audience" ToolTip="Package name Android do TridiAudience"/>
                             <Button Content="Cadastrar novo APK no catálogo..." Click="AddRelease_Click" Padding="10,7" Margin="0,0,0,8"/>
                             <TextBlock Text="Rollout por cidade (vazio = totens selecionados)" Foreground="#6F6B78" FontSize="11"/>
                             <Grid Margin="0,4,0,6">
