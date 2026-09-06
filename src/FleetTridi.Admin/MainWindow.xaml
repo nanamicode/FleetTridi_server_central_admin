@@ -25,13 +25,21 @@
         </DockPanel>
 
         <Border Grid.Row="1" Background="White" CornerRadius="12" Padding="12" Margin="0,16,0,16">
-            <StackPanel Orientation="Horizontal">
-                <TextBlock Text="Servidor" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                <TextBox x:Name="ServerBox" Width="290" Text="http://localhost:8787" Margin="0,0,8,0" Padding="7"/>
-                <TextBox x:Name="UserBox" Width="130" Text="nanamicode" Margin="0,0,8,0" Padding="7"/>
-                <PasswordBox x:Name="PassBox" Width="145" Margin="0,0,8,0" Padding="7"/>
-                <Button Content="Entrar / Atualizar" Click="Login_Click" Padding="16,8"/>
-                <TextBlock x:Name="OnlineCount" Margin="18,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold"/>
+            <StackPanel>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="Admin" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <TextBox x:Name="ServerBox" Width="270" Text="http://localhost:8787" Margin="0,0,8,0" Padding="7"/>
+                    <TextBox x:Name="UserBox" Width="125" Text="nanamicode" Margin="0,0,8,0" Padding="7"/>
+                    <PasswordBox x:Name="PassBox" Width="140" Margin="0,0,8,0" Padding="7"/>
+                    <Button Content="Entrar / Atualizar" Click="Login_Click" Padding="16,8"/>
+                    <TextBlock x:Name="OnlineCount" Margin="18,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,9,0,0">
+                    <TextBlock Text="URL vista pelos totens" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <TextBox x:Name="AgentUrlBox" Width="350" Margin="0,0,8,0" Padding="7"/>
+                    <Button Content="Detectar IP LAN" Click="DetectAgentUrl_Click" Padding="12,7"/>
+                    <TextBlock Text="Não use localhost aqui." Foreground="#8A6D1D" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                </StackPanel>
             </StackPanel>
         </Border>
 
@@ -134,6 +142,7 @@
                                 <TextBox x:Name="ReleaseVersionBox" Grid.Column="0" Margin="0,0,4,6" Padding="7" Text="1.0.0"/>
                                 <TextBox x:Name="ReleaseChannelBox" Grid.Column="1" Margin="4,0,0,6" Padding="7" Text="stable"/>
                             </Grid>
+                            <TextBox x:Name="ReleasePackageBox" Padding="7" Margin="0,0,0,6" Text="com.tridi.audience" ToolTip="Package name Android do TridiAudience"/>
                             <Button Content="Cadastrar novo APK no catálogo..." Click="AddRelease_Click" Padding="10,7" Margin="0,0,0,8"/>
                             <TextBlock Text="Rollout por cidade (vazio = totens selecionados)" Foreground="#6F6B78" FontSize="11"/>
                             <Grid Margin="0,4,0,6">
