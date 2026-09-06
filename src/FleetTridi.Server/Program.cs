@@ -86,7 +86,25 @@ bool IsOnline(Device d) => (DateTimeOffset.UtcNow - d.LastSeen).TotalSeconds < 3
 string PublicBaseUrl(HttpContext c) =>
     (Environment.GetEnvironmentVariable("FLEETTRIDI_PUBLIC_URL") ?? $"{c.Request.Scheme}://{c.Request.Host}").TrimEnd('/');
 
-string FileUrl(HttpContext c, string key) => $"{PublicBaseUrl(c)}/agent/files/{Uri.EscapeDataString(key)}";
+bool IsNonLoopbackHttpUrl(string? value)
+{
+    if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)) return false;
+    return (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps) && !uri.IsLoopback;
+}
+
+string DeviceBaseUrl(HttpContext c, Device? d)
+{
+    var configured = Environment.GetEnvironmentVariable("FLEETTRIDI_PUBLIC_URL")?.TrimEnd('/');
+    if (!string.IsNullOrWhiteSpace(configured)) return configured;
+
+    if (d is not null && IsNonLoopbackHttpUrl(d.AgentServerUrl))
+        return d.AgentServerUrl.TrimEnd('/');
+
+    return PublicBaseUrl(c);
+}
+
+string FileUrl(HttpContext c, Device? d, string key) =>
+    $"{DeviceBaseUrl(c, d)}/agent/files/{Uri.EscapeDataString(key)}";
 
 async Task SaveDevicesAsync()
 {
@@ -223,7 +241,7 @@ app.MapGet("/api/devices", (HttpContext c) =>
     {
         d.Id, d.Name, d.City, d.Site, d.Tags, d.UpdateChannel, d.InitialIp, d.LastIp,
         d.Model, d.AndroidVersion, d.AgentVersion, d.PrivilegeMode, d.RootAvailable,
-        d.AudiencePackage, d.AudienceVersion, d.LastSeen, online = IsOnline(d), d.Telemetry
+        d.AudiencePackage, d.AudienceVersion, d.AgentServerUrl, d.LastSeen, online = IsOnline(d), d.Telemetry
     }).OrderBy(x => x.City).ThenBy(x => x.Site).ThenBy(x => x.Name));
 });
 
@@ -375,7 +393,7 @@ app.MapPost("/api/devices/{id}/upload", async (string id, HttpContext c) =>
     var upload = await SaveUpload(file);
     return Results.Ok(await QueueJob(d, "pushFile", new()
     {
-        ["url"] = FileUrl(c, upload.Key),
+        ["url"] = FileUrl(c, d, upload.Key),
         ["target"] = target,
         ["sha256"] = upload.Sha256
     }));
@@ -398,7 +416,7 @@ app.MapPost("/api/devices/{id}/install-apk", async (string id, HttpContext c) =>
 
     return Results.Ok(await QueueJob(d, "installApk", new()
     {
-        ["url"] = FileUrl(c, upload.Key),
+        ["url"] = FileUrl(c, d, upload.Key),
         ["sha256"] = upload.Sha256,
         ["packageName"] = packageName,
         ["expectedVersion"] = form["version"].ToString().Trim(),
@@ -422,7 +440,7 @@ app.MapPost("/api/bulk/upload", async (HttpContext c) =>
     foreach (var d in targets)
         jobs.Add(await QueueJob(d, "pushFile", new()
         {
-            ["url"] = FileUrl(c, upload.Key),
+            ["url"] = FileUrl(c, d, upload.Key),
             ["target"] = target,
             ["sha256"] = upload.Sha256
         }));
@@ -448,7 +466,7 @@ app.MapPost("/api/bulk/install-apk", async (HttpContext c) =>
     foreach (var d in targets)
         jobs.Add(await QueueJob(d, "installApk", new()
         {
-            ["url"] = FileUrl(c, upload.Key),
+            ["url"] = FileUrl(c, d, upload.Key),
             ["sha256"] = upload.Sha256,
             ["packageName"] = packageName,
             ["expectedVersion"] = form["version"].ToString().Trim(),
@@ -558,7 +576,7 @@ app.MapPost("/api/releases/{releaseId}/deploy", async (string releaseId, HttpCon
     {
         jobs.Add(await QueueJob(d, "installApk", new()
         {
-            ["url"] = FileUrl(c, release.FileKey),
+            ["url"] = FileUrl(c, d, release.FileKey),
             ["sha256"] = release.Sha256,
             ["packageName"] = release.PackageName,
             ["expectedVersion"] = release.Version,
@@ -705,6 +723,7 @@ app.Map("/agent", async c =>
                 device.AgentVersion = root.TryGetProperty("agentVersion", out var ag) ? ag.GetString() ?? "" : "";
                 device.PrivilegeMode = root.TryGetProperty("privilegeMode", out var pm) ? pm.GetString() ?? "unknown" : "unknown";
                 device.RootAvailable = root.TryGetProperty("rootAvailable", out var ra) && ra.GetBoolean();
+                device.AgentServerUrl = root.TryGetProperty("serverUrl", out var su) ? su.GetString() ?? device.AgentServerUrl : device.AgentServerUrl;
                 device.AudiencePackage = root.TryGetProperty("audiencePackage", out var ap) ? ap.GetString() ?? "" : "";
                 device.AudienceVersion = root.TryGetProperty("audienceVersion", out var aVer) ? aVer.GetString() ?? "" : "";
                 await SaveDevicesAsync();
@@ -875,6 +894,7 @@ sealed class Device
     public string AgentVersion { get; set; } = "";
     public string PrivilegeMode { get; set; } = "unknown";
     public bool RootAvailable { get; set; }
+    public string AgentServerUrl { get; set; } = "";
     public string AudiencePackage { get; set; } = "";
     public string AudienceVersion { get; set; } = "";
     public DateTimeOffset LastSeen { get; set; } = DateTimeOffset.MinValue;
