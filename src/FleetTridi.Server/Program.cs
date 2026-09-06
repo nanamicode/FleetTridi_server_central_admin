@@ -12,6 +12,15 @@ var defaultUrls = devMode ? "http://127.0.0.1:8787" : "http://0.0.0.0:8787";
 
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseUrls(Environment.GetEnvironmentVariable("FLEETTRIDI_URLS") ?? defaultUrls);
+
+var maxUploadMb = int.TryParse(Environment.GetEnvironmentVariable("FLEETTRIDI_MAX_UPLOAD_MB"), out var configuredMaxUploadMb)
+    ? Math.Clamp(configuredMaxUploadMb, 32, 2048)
+    : 512;
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestBodySize = maxUploadMb * 1024L * 1024L;
+});
+
 var app = builder.Build();
 app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(15) });
 
@@ -547,16 +556,26 @@ app.MapPost("/api/releases/{releaseId}/deploy", async (string releaseId, HttpCon
     };
 
     var resolved = ResolveTargets(selector).ToArray();
-    var skippedCurrent = req.Force
-        ? Array.Empty<Device>()
-        : resolved.Where(d => string.Equals(d.AudienceVersion, release.Version, StringComparison.OrdinalIgnoreCase)).ToArray();
-    var targets = req.Force
-        ? resolved
-        : resolved.Where(d => !string.Equals(d.AudienceVersion, release.Version, StringComparison.OrdinalIgnoreCase)).ToArray();
+    var noRoot = resolved.Where(d => !d.RootAvailable).ToArray();
+    var eligible = resolved
+        .Where(d => d.RootAvailable)
+        .OrderBy(d => d.Id, StringComparer.Ordinal)
+        .ToArray();
 
     var percent = Math.Clamp(req.Percent <= 0 ? 100 : req.Percent, 1, 100);
-    var take = targets.Length == 0 ? 0 : Math.Max(1, (int)Math.Ceiling(targets.Length * (percent / 100.0)));
-    targets = targets.OrderBy(x => x.Id, StringComparer.Ordinal).Take(take).ToArray();
+    var desiredCount = eligible.Length == 0
+        ? 0
+        : Math.Max(1, (int)Math.Ceiling(eligible.Length * (percent / 100.0)));
+
+    // O percentual representa cobertura TOTAL desejada. Assim 10% -> 25%
+    // adiciona apenas a diferença necessária, sem transformar 25% em 32,5%.
+    var desiredWave = eligible.Take(desiredCount).ToArray();
+    var alreadyCurrent = req.Force
+        ? Array.Empty<Device>()
+        : desiredWave.Where(d => string.Equals(d.AudienceVersion, release.Version, StringComparison.OrdinalIgnoreCase)).ToArray();
+    var targets = req.Force
+        ? desiredWave
+        : desiredWave.Where(d => !string.Equals(d.AudienceVersion, release.Version, StringComparison.OrdinalIgnoreCase)).ToArray();
 
     if (req.DryRun)
         return Results.Ok(new
@@ -565,8 +584,11 @@ app.MapPost("/api/releases/{releaseId}/deploy", async (string releaseId, HttpCon
             release = new { release.Id, release.Version, release.Channel, release.Sha256 },
             percent,
             force = req.Force,
+            eligible = eligible.Length,
+            desiredCoverage = desiredWave.Length,
             count = targets.Length,
-            skippedAlreadyCurrent = skippedCurrent.Length,
+            skippedNoRoot = noRoot.Length,
+            skippedAlreadyCurrent = alreadyCurrent.Length,
             devices = targets.Select(x => new { x.Id, x.Name, x.City, x.Site, x.AudienceVersion, x.PrivilegeMode })
         });
 
@@ -592,6 +614,9 @@ app.MapPost("/api/releases/{releaseId}/deploy", async (string releaseId, HttpCon
         rolloutId,
         release = new { release.Id, release.Version, release.Channel, release.Sha256 },
         percent,
+        desiredCoverage = desiredWave.Length,
+        skippedNoRoot = noRoot.Length,
+        skippedAlreadyCurrent = alreadyCurrent.Length,
         count = jobs.Count,
         deviceIds = targets.Select(x => x.Id),
         jobs
