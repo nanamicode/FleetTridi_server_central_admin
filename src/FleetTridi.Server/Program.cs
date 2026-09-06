@@ -631,8 +631,19 @@ app.MapGet("/api/devices/{id}/screenshot", (string id, HttpContext c) =>
 {
     if (!IsAdmin(c)) return Results.Unauthorized();
     if (!devices.TryGetValue(id, out var d)) return Results.NotFound();
-    if (string.IsNullOrWhiteSpace(d.LastScreenshotBase64)) return Results.NoContent();
-    try { return Results.File(Convert.FromBase64String(d.LastScreenshotBase64), "image/png"); }
+    if (string.IsNullOrWhiteSpace(d.LastScreenshotBase64) || d.LastScreenshotAt is null) return Results.NoContent();
+
+    if (long.TryParse(c.Request.Query["after"], out var afterMs))
+    {
+        var after = DateTimeOffset.FromUnixTimeMilliseconds(afterMs);
+        if (d.LastScreenshotAt <= after) return Results.NoContent();
+    }
+
+    try
+    {
+        c.Response.Headers["X-Fleet-Screenshot-At"] = d.LastScreenshotAt.Value.ToUnixTimeMilliseconds().ToString();
+        return Results.File(Convert.FromBase64String(d.LastScreenshotBase64), "image/png");
+    }
     catch { return Results.Problem("invalid screenshot payload"); }
 });
 
