@@ -1,6 +1,3 @@
-using System.Net.Http.Json;
-using System.Text.Json;
-
 namespace FleetTridi.Admin;
 
 public partial class MainWindow
@@ -29,24 +26,8 @@ public partial class MainWindow
         {
             try
             {
-                http.BaseAddress = new Uri(ServerBox.Text.TrimEnd('/') + "/");
-                var response = await http.PostAsJsonAsync("api/login", new
-                {
-                    username = UserBox.Text,
-                    password = PassBox.Password
-                });
-
-                response.EnsureSuccessStatusCode();
-                token = (await response.Content.ReadFromJsonAsync<JsonElement>())
-                    .GetProperty("token")
-                    .GetString()!;
-
-                http.DefaultRequestHeaders.Remove("X-Fleet-Token");
-                http.DefaultRequestHeaders.Add("X-Fleet-Token", token);
-
-                await Refresh();
-                await RefreshReleases();
-                StatusText.Text = "Central local iniciada e conectada automaticamente.";
+                await LoginAsync();
+                StatusText.Text = "Central local iniciada. Confirme a URL LAN detectada antes do bootstrap.";
                 return;
             }
             catch (Exception ex)
