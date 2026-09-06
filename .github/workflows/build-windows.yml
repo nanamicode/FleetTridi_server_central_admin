@@ -23,7 +23,20 @@ jobs:
       - name: Add quick start
         shell: pwsh
         run: |
-          "Configure FLEETTRIDI_ADMIN_PASSWORD antes de expor o servidor. Para teste local use FLEETTRIDI_DEV_MODE=1 e senha fleettridi-local." | Set-Content -Encoding UTF8 dist/FleetTridi-Windows/LEIA-ME.txt
+          Copy-Item scripts/INICIAR-TESTE-LOCAL.cmd dist/FleetTridi-Windows/INICIAR-TESTE-LOCAL.bat
+          @"
+FleetTridi v0.4.1
+
+PRIMEIRO TESTE:
+1. Execute INICIAR-TESTE-LOCAL.bat.
+2. No Admin use http://localhost:8787.
+3. Usuario: nanamicode
+4. Senha: fleettridi-local
+5. Clique Detectar IP LAN antes do Bootstrap.
+6. Se o Firewall perguntar, permita somente em redes privadas.
+
+Produção: configure FLEETTRIDI_ADMIN_PASSWORD e HTTPS.
+"@ | Set-Content -Encoding UTF8 dist/FleetTridi-Windows/LEIA-ME.txt
       - uses: actions/upload-artifact@v4
         with:
           name: FleetTridi-Windows
