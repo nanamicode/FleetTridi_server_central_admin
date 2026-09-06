@@ -1,7 +1,8 @@
 name: build-android
 on:
   push:
-    branches: [ main ]
+    branches: [ main, fleet-v0.4-rollouts ]
+  pull_request:
   workflow_dispatch:
 jobs:
   build:

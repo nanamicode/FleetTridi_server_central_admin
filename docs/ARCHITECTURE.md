@@ -1,76 +1,115 @@
-# Arquitetura FleetTridi
+# Arquitetura FleetTridi v0.4
 
-## Modelo de conexão
+## Objetivo
 
-O IP do totem é usado somente no bootstrap inicial. A identidade permanente é um deviceId com token de enrollment.
+Gerenciar N totens TridiAudience em uma ou várias cidades sem manter uma sessão ADB permanente e sem depender de IP fixo.
 
-Depois do bootstrap, cada FleetTridi Agent abre um WebSocket de saída até o FleetTridi.Server. Isso funciona muito melhor entre redes, cidades e links com IP dinâmico do que tentar manter ADB TCP aberto na Internet.
+## Plano de controle
 
-Admin Windows -> FleetTridi.Server <- WebSocket de saída <- Totens
+```
+                    +--------------------+
+FleetTridi.Admin -->| FleetTridi.Server  |<-- WSS -- Totem A
+        HTTPS       |                    |<-- WSS -- Totem B
+                    | releases + jobs    |<-- WSS -- Totem N
+                    +--------------------+
+```
 
-Apenas o servidor central precisa ser alcançável pela Internet.
+O servidor é o único componente que precisa de endereço público. Os totens iniciam conexões de saída.
 
-## FleetTridi.Server
+## Identidade
 
-Central em .NET 8.
+Cada dispositivo possui:
 
-Responsabilidades da v0.3:
+- `deviceId` permanente;
+- token aleatório de 256 bits;
+- nome;
+- cidade;
+- local/ponto;
+- tags;
+- canal de atualização;
+- estado online;
+- versão do agente;
+- versão atual do TridiAudience;
+- modo real de privilégio.
 
-- login administrativo;
-- cadastro de dispositivos por ID;
-- persistência em data/devices.json;
-- online/offline e último IP observado;
-- telemetria;
-- fila e histórico de jobs;
-- upload de APK e arquivos;
-- ações individuais e em massa;
-- screenshot remoto;
-- entrega de jobs ao agente por WebSocket;
-- reentrega de jobs pendentes após reconexão.
+O token deixa de trafegar na query string no protocolo v0.4 e passa pelo header `X-Fleet-Device-Token`.
 
-O armazenamento em JSON mantém a primeira implantação simples e sem banco externo. A camada pode migrar para PostgreSQL quando a frota exigir sem mudar o protocolo dos totens.
+## Jobs
 
-## FleetTridi Agent
+O agente implementa uma allowlist, não um shell remoto genérico:
 
-Aplicativo Android/Kotlin para Android 9+.
+- `installApk`;
+- `pushFile`;
+- `syncCreative`;
+- `restartAudience`;
+- `rebootDevice`;
+- `captureScreen`;
+- `tap`, `swipe`, `keyevent`.
 
-O agente inicia no boot, mantém foreground service, reconecta sozinho e usa root local somente para operações explícitas de gerenciamento da frota.
+Isso reduz o impacto de erro operacional e mantém o escopo de administração explícito.
 
-Operações implementadas:
+## Releases
 
-- instalar/atualizar APK;
-- sincronizar criativos;
-- enviar arquivos para áreas FleetTridi;
-- reiniciar TridiAudience;
-- reiniciar o dispositivo;
-- HOME/BACK e keyevents;
-- tap;
-- swipe;
-- screenshot;
-- telemetria de memória, armazenamento, carga, temperatura, uptime e tela.
+Um APK pode ser armazenado como uma release contendo:
 
-O agente não depende de uma sessão ADB após o enrollment.
+- versão;
+- package name;
+- canal;
+- notas;
+- SHA-256;
+- tamanho;
+- data de criação.
 
-## Bootstrap inicial
+O totem baixa o APK autenticado, calcula SHA-256 localmente e só tenta instalar se o hash for idêntico.
 
-1. Cadastre o totem no Admin.
-2. O Server gera deviceId e enrollmentToken.
-3. Conecte uma vez por ADB ao IP inicial ou por USB.
-4. O Admin instala FleetTridi Agent.
-5. O Admin grava URL do servidor, ID, token, cidade e local no agente.
-6. O agente inicia e passa a se conectar de saída.
-7. A partir daí o IP inicial deixa de ser necessário para operação normal.
+Depois da instalação, o agente consulta o PackageManager e devolve a versão realmente instalada.
 
-## Tela remota
+## Rollouts
 
-A v0.3 usa screenshots periódicos para priorizar compatibilidade com a BTV/Android 9.
+O servidor resolve os alvos por:
 
-O painel transforma cliques na imagem em coordenadas reais do Android e envia tap. Setas, Enter, Esc/Home também podem ser encaminhados.
+- lista de IDs;
+- cidade;
+- local;
+- tag;
+- canal;
+- somente online;
+- todos online.
 
-O próximo degrau é substituir screenshots periódicos por stream H.264/MediaCodec com menor latência.
+O parâmetro `percent` permite canary/rollout gradual. `dryRun=true` retorna a lista que seria atingida sem criar jobs.
 
-## Escala
+Rollback é um novo deploy de uma release anterior conhecida.
 
-Uma atualização em massa é enviada uma vez ao servidor e referenciada por N jobs. Cada totem baixa o arquivo diretamente do servidor.
+## Persistência
 
-A arquitetura já permite agrupamento por cidade, ponto e IDs. As próximas camadas de escala são grupos permanentes, rollout gradual, rollback, séries históricas e canais de versão.
+A v0.4 mantém arquivos JSON para facilitar o primeiro deployment:
+
+- `data/devices.json`;
+- `data/releases.json`;
+- `data/audit.jsonl`;
+- `data/uploads/`.
+
+Para centenas/milhares de dispositivos, o próximo passo natural é PostgreSQL + object storage, preservando o protocolo do agente.
+
+## Privilégio Android
+
+O agente atual usa `su -c` para operações que exigem privilégio. `adb root` não concede automaticamente esse privilégio a um APK depois que ADB deixa de participar.
+
+Por isso o agente reporta:
+
+- `su-root`: `su -c id` retorna UID 0;
+- `unprivileged`: root persistente não está disponível.
+
+A instalação silenciosa deve ser considerada disponível somente no primeiro caso.
+
+## Segurança de rede
+
+Produção deve usar:
+
+- HTTPS/WSS;
+- senha administrativa por variável de ambiente;
+- token de dispositivo individual;
+- rotação de token em caso de comprometimento;
+- ADB limitado à manutenção local;
+- firewall sem exposição pública da porta 5555;
+- backup do diretório de dados.

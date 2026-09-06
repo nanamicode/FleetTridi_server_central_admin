@@ -10,5 +10,7 @@ services:
       - ./fleettridi-data:/app/data
     environment:
       FLEETTRIDI_URLS: http://0.0.0.0:8787
-      FLEETTRIDI_ADMIN_USER: nanamicode
-      FLEETTRIDI_ADMIN_PASSWORD: veralucia12
+      FLEETTRIDI_PUBLIC_URL: ${FLEETTRIDI_PUBLIC_URL:?configure a URL publica HTTPS}
+      FLEETTRIDI_ADMIN_USER: ${FLEETTRIDI_ADMIN_USER:-nanamicode}
+      FLEETTRIDI_ADMIN_PASSWORD: ${FLEETTRIDI_ADMIN_PASSWORD:?defina uma senha administrativa forte}
+      FLEETTRIDI_ADMIN_TOKEN: ${FLEETTRIDI_ADMIN_TOKEN:-}

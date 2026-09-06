@@ -1,7 +1,8 @@
 name: build-windows
 on:
   push:
-    branches: [ main ]
+    branches: [ main, fleet-v0.4-rollouts ]
+  pull_request:
   workflow_dispatch:
 jobs:
   build:
@@ -22,7 +23,7 @@ jobs:
       - name: Add quick start
         shell: pwsh
         run: |
-          "Execute FleetTridi.Server.exe e depois FleetTridi.Admin.exe. Login padrao: nanamicode / veralucia12" | Set-Content -Encoding UTF8 dist/FleetTridi-Windows/LEIA-ME.txt
+          "Configure FLEETTRIDI_ADMIN_PASSWORD antes de expor o servidor. Para teste local use FLEETTRIDI_DEV_MODE=1 e senha fleettridi-local." | Set-Content -Encoding UTF8 dist/FleetTridi-Windows/LEIA-ME.txt
       - uses: actions/upload-artifact@v4
         with:
           name: FleetTridi-Windows

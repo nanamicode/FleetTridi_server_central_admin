@@ -39,6 +39,7 @@ public partial class MainWindow : Window
             http.DefaultRequestHeaders.Remove("X-Fleet-Token");
             http.DefaultRequestHeaders.Add("X-Fleet-Token", token);
             await Refresh();
+            await RefreshReleases();
             StatusText.Text = "Conectado ao servidor.";
         }
         catch (Exception ex) { StatusText.Text = "Falha: " + ex.Message; }
@@ -74,7 +75,7 @@ public partial class MainWindow : Window
 
     void ShowSelected(DeviceRow d)
     {
-        SelectedLabel.Text = $"{d.name} — {d.city} / {d.site}\nID: {d.id}\nIP: {d.lastIp}   Android: {d.androidVersion}   Agente: {d.agentVersion}";
+        SelectedLabel.Text = $"{d.name} — {d.city} / {d.site}\nID: {d.id}\nIP: {d.lastIp}   Android: {d.androidVersion}   Agente: {d.agentVersion}\nTridiAudience: {d.audienceVersion}   Privilégio: {d.privilegeMode}";
         TelemetryBox.Text = d.telemetry.ValueKind == JsonValueKind.Undefined ? "" : JsonSerializer.Serialize(d.telemetry, new JsonSerializerOptions { WriteIndented = true });
     }
 
@@ -139,13 +140,22 @@ public partial class MainWindow : Window
             log.AppendLine(await Run(adb, "connect", serial));
             log.AppendLine(await Run(adb, "-s", serial, "wait-for-device"));
 
-            // adb root works only on root-enabled adbd. The following su command covers rooted production boxes.
+            // adb root eleva o adbd quando a ROM permite, mas não garante root persistente para um APK.
             log.AppendLine(await Run(adb, "-s", serial, "root"));
             await Task.Delay(700);
             log.AppendLine(await Run(adb, "connect", serial));
+            log.AppendLine(await Run(adb, "-s", serial, "wait-for-device"));
+
+            // Em manutenção local é seguro limpar somente o agente para garantir que o enrollment one-shot seja aceito.
+            log.AppendLine(await Run(adb, "-s", serial, "shell", "pm", "clear", "com.tridi.fleet.agent"));
             log.AppendLine(await Run(adb, "-s", serial, "install", "-r", dlg.FileName));
-            log.AppendLine(await Run(adb, "-s", serial, "shell", "settings", "put", "global", "adb_enabled", "1"));
-            log.AppendLine(await Run(adb, "-s", serial, "shell", "su", "-c", "setprop persist.sys.usb.config adb"));
+
+            var rootCheck = await Run(adb, "-s", serial, "shell", "su", "-c", "id");
+            log.AppendLine(rootCheck);
+            if (!rootCheck.Contains("uid=0", StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    "O agente foi instalado, mas não há su/root persistente disponível para o app. " +
+                    "Sem isso, instalação silenciosa de APK e reboot remoto não serão confiáveis após o ADB sair da operação.");
 
             var server = ServerBox.Text.TrimEnd('/');
             log.AppendLine(await Run(adb, "-s", serial, "shell", "am", "broadcast",
@@ -156,10 +166,11 @@ public partial class MainWindow : Window
                 "--es", "token", enrollment.enrollmentToken,
                 "--es", "name", enrollment.name ?? "",
                 "--es", "city", enrollment.city ?? "",
-                "--es", "site", enrollment.site ?? ""));
+                "--es", "site", enrollment.site ?? "",
+                "--es", "audiencePackage", "com.tridi.audience"));
 
             OutputBox.Text = log.ToString();
-            StatusText.Text = "Bootstrap enviado. O agente deve aparecer online em alguns segundos.";
+            StatusText.Text = "Bootstrap concluído com root persistente validado. ADB não é necessário para o controle normal.";
             await Task.Delay(1800);
             await Refresh();
         }
@@ -350,6 +361,95 @@ public partial class MainWindow : Window
         OutputBox.Text = await r.Content.ReadAsStringAsync();
     }
 
+    async Task RefreshReleases()
+    {
+        try
+        {
+            var list = await http.GetFromJsonAsync<List<ReleaseRow>>("api/releases") ?? [];
+            foreach (var item in list)
+                item.label = $"{item.version} [{item.channel}] — {item.sha256[..Math.Min(12, item.sha256.Length)]}";
+            ReleaseBox.ItemsSource = list;
+            if (list.Count > 0 && ReleaseBox.SelectedIndex < 0) ReleaseBox.SelectedIndex = 0;
+        }
+        catch (Exception ex)
+        {
+            OutputBox.Text = "Falha ao ler releases: " + ex.Message;
+        }
+    }
+
+    async void RefreshReleases_Click(object s, RoutedEventArgs e) => await RefreshReleases();
+
+    async void AddRelease_Click(object s, RoutedEventArgs e)
+    {
+        try
+        {
+            await EnsureLogin();
+            var version = ReleaseVersionBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(version)) throw new InvalidOperationException("Informe a versão da release.");
+
+            var dlg = new OpenFileDialog { Filter = "APK Android|*.apk", Title = "Selecione o APK do TridiAudience" };
+            if (dlg.ShowDialog() != true) return;
+
+            using var form = new MultipartFormDataContent();
+            await using var fs = File.OpenRead(dlg.FileName);
+            form.Add(new StreamContent(fs), "file", Path.GetFileName(dlg.FileName));
+            form.Add(new StringContent(version), "version");
+            form.Add(new StringContent("com.tridi.audience"), "packageName");
+            form.Add(new StringContent(string.IsNullOrWhiteSpace(ReleaseChannelBox.Text) ? "stable" : ReleaseChannelBox.Text.Trim()), "channel");
+            form.Add(new StringContent("Cadastrado pelo FleetTridi Admin"), "notes");
+
+            var response = await http.PostAsync("api/releases", form);
+            var body = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode) throw new InvalidOperationException(body);
+
+            OutputBox.Text = body;
+            await RefreshReleases();
+        }
+        catch (Exception ex) { OutputBox.Text = ex.Message; }
+    }
+
+    async Task DeployRelease(bool dryRun)
+    {
+        try
+        {
+            await EnsureLogin();
+            if (ReleaseBox.SelectedItem is not ReleaseRow release)
+                throw new InvalidOperationException("Selecione uma release.");
+
+            var percent = int.TryParse(RolloutPercentBox.Text, out var parsed) ? Math.Clamp(parsed, 1, 100) : 10;
+            var city = RolloutCityBox.Text.Trim();
+            var ids = string.IsNullOrWhiteSpace(city) ? SelectedRows().Select(x => x.id).ToArray() : Array.Empty<string>();
+            if (string.IsNullOrWhiteSpace(city) && ids.Length == 0)
+                throw new InvalidOperationException("Informe uma cidade ou selecione ao menos um totem.");
+
+            if (!dryRun)
+            {
+                var targetText = string.IsNullOrWhiteSpace(city) ? $"{ids.Length} totem(ns) selecionado(s)" : $"cidade {city}";
+                var confirm = MessageBox.Show(this,
+                    $"Publicar TridiAudience {release.version} para {percent}% de {targetText}?\n\nUse primeiro Simular rollout para conferir os alvos.",
+                    "Confirmar rollout", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (confirm != MessageBoxResult.Yes) return;
+            }
+
+            var response = await http.PostAsJsonAsync($"api/releases/{release.id}/deploy", new
+            {
+                ids,
+                city = string.IsNullOrWhiteSpace(city) ? null : city,
+                allOnline = false,
+                onlyOnline = true,
+                percent,
+                dryRun
+            });
+            var body = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode) throw new InvalidOperationException(body);
+            OutputBox.Text = body;
+        }
+        catch (Exception ex) { OutputBox.Text = ex.Message; }
+    }
+
+    async void DryRunRelease_Click(object s, RoutedEventArgs e) => await DeployRelease(true);
+    async void DeployRelease_Click(object s, RoutedEventArgs e) => await DeployRelease(false);
+
     public sealed class DeviceRow
     {
         public string id { get; set; } = "";
@@ -361,9 +461,25 @@ public partial class MainWindow : Window
         public string model { get; set; } = "";
         public string androidVersion { get; set; } = "";
         public string agentVersion { get; set; } = "";
+        public string audienceVersion { get; set; } = "";
+        public string privilegeMode { get; set; } = "";
+        public string updateChannel { get; set; } = "";
         public bool online { get; set; }
         public bool rootAvailable { get; set; }
         public JsonElement telemetry { get; set; }
+    }
+
+    public sealed class ReleaseRow
+    {
+        public string id { get; set; } = "";
+        public string version { get; set; } = "";
+        public string packageName { get; set; } = "";
+        public string channel { get; set; } = "";
+        public string notes { get; set; } = "";
+        public string sha256 { get; set; } = "";
+        public long sizeBytes { get; set; }
+        public DateTimeOffset createdAt { get; set; }
+        public string label { get; set; } = "";
     }
 
     public sealed class Enrollment
