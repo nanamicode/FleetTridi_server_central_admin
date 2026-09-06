@@ -1,0 +1,1 @@
+using System.Windows; namespace FleetTridi.Admin; public partial class App : Application { }
