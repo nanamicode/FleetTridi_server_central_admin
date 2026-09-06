@@ -2,9 +2,9 @@
 
 Central de gerenciamento remoto da frota TridiAudience.
 
-## Estado atual — v0.5 plug-and-play
+## Estado atual — v0.5.1 pré-teste
 
-A v0.5 preserva o protocolo de gerenciamento validado na v0.4 e acrescenta uma camada de uso simples para Windows.
+A v0.5.1 preserva a central plug-and-play da v0.5 e endurece o caminho do primeiro teste físico: LAN correta, bootstrap USB, validação de root pelo próprio Agent, uploads grandes, atualização verificada e rollout cumulativo.
 
 ### Um único ponto de entrada no Windows
 
@@ -18,12 +18,9 @@ O pacote **FleetTridi-Windows** agora inclui:
 
 Ao abrir `FleetTridi.Central.exe` no modo local, ele inicia o servidor, abre o painel e faz o login automaticamente.
 
-Credenciais locais de desenvolvimento:
+No modo plug-and-play a Central gera uma senha administrativa aleatória para cada sessão e a entrega diretamente ao Admin. O operador não precisa digitar nem conhecer essa senha.
 
-- usuário: `nanamicode`
-- senha: `veralucia12`
-
-O servidor local fica em `127.0.0.1`, portanto essas credenciais de conveniência não são usadas como senha padrão de produção.
+O Admin fala com `127.0.0.1`, enquanto o servidor também escuta na LAN para que o totem consiga conectar. O painel mostra separadamente a **URL vista pelos totens**.
 
 ## Arquitetura
 
@@ -68,6 +65,20 @@ Cada totem abre uma conexão **de saída** até a central. O IP é necessário s
 - log de auditoria;
 - Docker para o servidor;
 - pacote Windows all-in-one.
+
+## Antes do primeiro teste
+
+O bootstrap só é considerado concluído quando:
+
+- o ADB encontra exatamente o equipamento esperado;
+- o Agent é instalado e recebe o enrollment;
+- o Android abre a conexão de saída de volta para a central;
+- o próprio Agent executa `su -c id` e reporta `su-root`;
+- o servidor passa a ver a versão real do Agent/TridiAudience.
+
+Se qualquer etapa falhar, o Admin interrompe o fluxo com uma mensagem específica em vez de declarar sucesso.
+
+O limite de upload do servidor é 512 MB por padrão e pode ser alterado com `FLEETTRIDI_MAX_UPLOAD_MB`.
 
 ## Root Android
 

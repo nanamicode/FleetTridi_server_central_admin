@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Windows.Forms;
 
 ApplicationConfiguration.Initialize();
@@ -8,9 +9,10 @@ var serverPath = Path.Combine(baseDir, "FleetTridi.Server.exe");
 var adminPath = Path.Combine(baseDir, "FleetTridi.Admin.exe");
 var dataDir = Path.Combine(baseDir, "data");
 
-const string localUrl = "http://127.0.0.1:8787";
+const string adminUrl = "http://127.0.0.1:8787";
+const string serverListenUrl = "http://0.0.0.0:8787";
 const string localUser = "nanamicode";
-const string localPassword = "veralucia12";
+var localPassword = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
 
 try
 {
@@ -33,9 +35,14 @@ try
         server.Environment["FLEETTRIDI_ADMIN_USER"] = localUser;
         server.Environment["FLEETTRIDI_ADMIN_PASSWORD"] = localPassword;
         server.Environment["FLEETTRIDI_DATA_DIR"] = dataDir;
-        server.Environment["FLEETTRIDI_URLS"] = localUrl;
+        server.Environment["FLEETTRIDI_URLS"] = serverListenUrl;
         Process.Start(server);
         Thread.Sleep(1100);
+    }
+    else
+    {
+        throw new InvalidOperationException(
+            "Já existe um FleetTridi.Server em execução. Feche a instância anterior e abra a Central novamente para evitar usar credenciais/porta de outra sessão.");
     }
 
     var admin = new ProcessStartInfo(adminPath)
@@ -43,7 +50,7 @@ try
         WorkingDirectory = baseDir,
         UseShellExecute = false
     };
-    admin.Environment["FLEETTRIDI_SERVER_URL"] = localUrl;
+    admin.Environment["FLEETTRIDI_SERVER_URL"] = adminUrl;
     admin.Environment["FLEETTRIDI_ADMIN_USER"] = localUser;
     admin.Environment["FLEETTRIDI_ADMIN_PASSWORD"] = localPassword;
     admin.Environment["FLEETTRIDI_AUTO_LOGIN"] = "1";

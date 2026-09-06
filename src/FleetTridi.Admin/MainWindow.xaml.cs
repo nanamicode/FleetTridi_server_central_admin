@@ -1,7 +1,10 @@
 using Microsoft.Win32;
 using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Net.Http;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
@@ -15,7 +18,9 @@ namespace FleetTridi.Admin;
 
 public partial class MainWindow : Window
 {
-    readonly HttpClient http = new() { Timeout = TimeSpan.FromMinutes(10) };
+    HttpClient http = NewHttpClient();
+
+    static HttpClient NewHttpClient() => new() { Timeout = TimeSpan.FromMinutes(10) };
     readonly DispatcherTimer liveTimer = new() { Interval = TimeSpan.FromMilliseconds(1200) };
     string token = "";
     string? selectedId;
@@ -28,29 +33,99 @@ public partial class MainWindow : Window
         liveTimer.Tick += async (_, _) => await LiveTick();
     }
 
+    async Task LoginAsync()
+    {
+        var baseUrl = ServerBox.Text.Trim().TrimEnd('/');
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri))
+            throw new InvalidOperationException("URL do servidor Admin inválida.");
+
+        http.Dispose();
+        http = NewHttpClient();
+        http.BaseAddress = new Uri(baseUrl + "/");
+
+        var r = await http.PostAsJsonAsync("api/login", new { username = UserBox.Text, password = PassBox.Password });
+        var body = await r.Content.ReadAsStringAsync();
+        if (!r.IsSuccessStatusCode) throw new InvalidOperationException("Login recusado: " + body);
+
+        token = JsonDocument.Parse(body).RootElement.GetProperty("token").GetString() ?? "";
+        if (string.IsNullOrWhiteSpace(token))
+            throw new InvalidOperationException("O servidor retornou um token administrativo vazio.");
+
+        http.DefaultRequestHeaders.Remove("X-Fleet-Token");
+        http.DefaultRequestHeaders.Add("X-Fleet-Token", token);
+
+        if (string.IsNullOrWhiteSpace(AgentUrlBox.Text))
+            AgentUrlBox.Text = SuggestAgentUrl(uri);
+
+        await Refresh();
+        await RefreshReleases();
+        StatusText.Text = "Conectado ao servidor.";
+    }
+
     async void Login_Click(object sender, RoutedEventArgs e)
     {
-        try
+        try { await LoginAsync(); }
+        catch (Exception ex)
         {
-            http.BaseAddress = new Uri(ServerBox.Text.TrimEnd('/') + "/");
-            var r = await http.PostAsJsonAsync("api/login", new { username = UserBox.Text, password = PassBox.Password });
-            r.EnsureSuccessStatusCode();
-            token = (await r.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("token").GetString()!;
-            http.DefaultRequestHeaders.Remove("X-Fleet-Token");
-            http.DefaultRequestHeaders.Add("X-Fleet-Token", token);
-            await Refresh();
-            await RefreshReleases();
-            StatusText.Text = "Conectado ao servidor.";
+            token = "";
+            StatusText.Text = "Falha: " + ex.Message;
         }
-        catch (Exception ex) { StatusText.Text = "Falha: " + ex.Message; }
     }
 
     async Task EnsureLogin()
     {
         if (!string.IsNullOrWhiteSpace(token)) return;
-        Login_Click(this, new RoutedEventArgs());
-        await Task.Delay(250);
-        if (string.IsNullOrWhiteSpace(token)) throw new InvalidOperationException("Faça login no servidor primeiro.");
+        await LoginAsync();
+    }
+
+    void DetectAgentUrl_Click(object sender, RoutedEventArgs e)
+    {
+        if (!Uri.TryCreate(ServerBox.Text.Trim(), UriKind.Absolute, out var uri))
+        {
+            StatusText.Text = "URL do servidor Admin inválida.";
+            return;
+        }
+
+        AgentUrlBox.Text = SuggestAgentUrl(uri);
+        StatusText.Text = string.IsNullOrWhiteSpace(AgentUrlBox.Text)
+            ? "Não encontrei um IPv4 LAN automaticamente. Informe o IP do PC manualmente."
+            : "URL para os totens: " + AgentUrlBox.Text;
+    }
+
+    static string SuggestAgentUrl(Uri adminUri)
+    {
+        if (!adminUri.IsLoopback) return adminUri.ToString().TrimEnd('/');
+
+        var candidates = NetworkInterface.GetAllNetworkInterfaces()
+            .Where(n => n.OperationalStatus == OperationalStatus.Up &&
+                        n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
+            .SelectMany(n =>
+            {
+                var props = n.GetIPProperties();
+                var hasGateway = props.GatewayAddresses.Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork);
+                return props.UnicastAddresses
+                    .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
+                    .Select(a => new { a.Address, hasGateway });
+            })
+            .Where(x => !IPAddress.IsLoopback(x.Address) &&
+                        !x.Address.ToString().StartsWith("169.254.", StringComparison.Ordinal))
+            .OrderByDescending(x => x.hasGateway)
+            .ThenByDescending(x => IsPrivateIPv4(x.Address))
+            .ToArray();
+
+        var ip = candidates.FirstOrDefault()?.Address;
+        if (ip is null) return "";
+
+        var port = adminUri.IsDefaultPort ? "" : ":" + adminUri.Port;
+        return $"{adminUri.Scheme}://{ip}{port}";
+    }
+
+    static bool IsPrivateIPv4(IPAddress ip)
+    {
+        var b = ip.GetAddressBytes();
+        return b[0] == 10 ||
+               (b[0] == 172 && b[1] is >= 16 and <= 31) ||
+               (b[0] == 192 && b[1] == 168);
     }
 
     async Task Refresh()
@@ -75,7 +150,9 @@ public partial class MainWindow : Window
 
     void ShowSelected(DeviceRow d)
     {
-        SelectedLabel.Text = $"{d.name} — {d.city} / {d.site}\nID: {d.id}\nIP: {d.lastIp}   Android: {d.androidVersion}   Agente: {d.agentVersion}\nTridiAudience: {d.audienceVersion}   Privilégio: {d.privilegeMode}";
+        SelectedLabel.Text = $"{d.name} — {d.city} / {d.site}\nID: {d.id}\nIP: {d.lastIp}   Android: {d.androidVersion}   Agente: {d.agentVersion}\nTridiAudience: {d.audienceVersion} ({d.audiencePackage})   Privilégio: {d.privilegeMode}";
+        if (!string.IsNullOrWhiteSpace(d.audiencePackage))
+            ReleasePackageBox.Text = d.audiencePackage;
         TelemetryBox.Text = d.telemetry.ValueKind == JsonValueKind.Undefined ? "" : JsonSerializer.Serialize(d.telemetry, new JsonSerializerOptions { WriteIndented = true });
     }
 
@@ -135,33 +212,45 @@ public partial class MainWindow : Window
             if (dlg.ShowDialog() != true) return;
 
             var adb = FindAdb();
-            var serial = enrollment.initialIp.Contains(':') ? enrollment.initialIp : enrollment.initialIp + ":5555";
+            var target = await ResolveAdbTarget(adb, enrollment.initialIp);
+            var serial = target.Serial;
             var log = new StringBuilder();
-            log.AppendLine(await Run(adb, "connect", serial));
+
+            if (target.IsNetwork)
+                log.AppendLine(await Run(adb, "connect", serial));
+
             log.AppendLine(await Run(adb, "-s", serial, "wait-for-device"));
 
-            // adb root eleva o adbd quando a ROM permite, mas não garante root persistente para um APK.
+            // adb root é apenas uma tentativa de elevar o adbd. A validação real do app acontece depois.
             log.AppendLine(await Run(adb, "-s", serial, "root"));
-            await Task.Delay(700);
-            log.AppendLine(await Run(adb, "connect", serial));
+            await Task.Delay(900);
+            if (target.IsNetwork)
+                log.AppendLine(await Run(adb, "connect", serial));
             log.AppendLine(await Run(adb, "-s", serial, "wait-for-device"));
 
-            // Em manutenção local é seguro limpar somente o agente para garantir que o enrollment one-shot seja aceito.
-            log.AppendLine(await Run(adb, "-s", serial, "shell", "pm", "clear", "com.tridi.fleet.agent"));
-            log.AppendLine(await Run(adb, "-s", serial, "install", "-r", dlg.FileName));
+            // Provisionamento físico: reinstala o agente limpo. Isso também evita conflito de certificado entre builds DEBUG.
+            log.AppendLine(await Run(adb, "-s", serial, "uninstall", "com.tridi.fleet.agent"));
+            log.AppendLine(await Run(adb, "-s", serial, "install", dlg.FileName));
 
-            var rootCheck = await Run(adb, "-s", serial, "shell", "su", "-c", "id");
-            log.AppendLine(rootCheck);
-            if (!rootCheck.Contains("uid=0", StringComparison.Ordinal))
+            var shellRootCheck = await Run(adb, "-s", serial, "shell", "su", "-c", "id");
+            log.AppendLine(shellRootCheck);
+            if (!shellRootCheck.Contains("uid=0", StringComparison.Ordinal))
                 throw new InvalidOperationException(
-                    "O agente foi instalado, mas não há su/root persistente disponível para o app. " +
-                    "Sem isso, instalação silenciosa de APK e reboot remoto não serão confiáveis após o ADB sair da operação.");
+                    "O shell ADB não conseguiu executar su -c id. O agente pode ser instalado, mas atualização silenciosa/reboot remoto não devem ser testados ainda.");
 
-            var server = ServerBox.Text.TrimEnd('/');
+            var agentServer = AgentUrlBox.Text.Trim().TrimEnd('/');
+            if (!Uri.TryCreate(agentServer, UriKind.Absolute, out var agentUri) ||
+                (agentUri.Scheme != Uri.UriSchemeHttp && agentUri.Scheme != Uri.UriSchemeHttps))
+                throw new InvalidOperationException("Informe uma URL válida em “URL vista pelos totens”.");
+
+            if (agentUri.IsLoopback)
+                throw new InvalidOperationException(
+                    "A URL dos totens não pode ser localhost/127.0.0.1. Use o IP LAN do PC ou a URL pública da central.");
+
             log.AppendLine(await Run(adb, "-s", serial, "shell", "am", "broadcast",
                 "-n", "com.tridi.fleet.agent/.ConfigReceiver",
                 "-a", "com.tridi.fleet.agent.CONFIG",
-                "--es", "server", server,
+                "--es", "server", agentServer,
                 "--es", "deviceId", enrollment.deviceId,
                 "--es", "token", enrollment.enrollmentToken,
                 "--es", "name", enrollment.name ?? "",
@@ -170,11 +259,68 @@ public partial class MainWindow : Window
                 "--es", "audiencePackage", "com.tridi.audience"));
 
             OutputBox.Text = log.ToString();
-            StatusText.Text = "Bootstrap concluído com root persistente validado. ADB não é necessário para o controle normal.";
-            await Task.Delay(1800);
+            StatusText.Text = "Enrollment enviado. Validando conexão e root pelo próprio agente...";
+
+            DeviceRow? confirmed = null;
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                await Task.Delay(1000);
+                var data = await http.GetFromJsonAsync<List<DeviceRow>>("api/devices") ?? [];
+                confirmed = data.FirstOrDefault(x => x.id == enrollment.deviceId);
+                if (confirmed?.online == true && !string.IsNullOrWhiteSpace(confirmed.privilegeMode))
+                    break;
+            }
+
             await Refresh();
+
+            if (confirmed?.online != true)
+                throw new InvalidOperationException(
+                    "O APK foi provisionado, mas o agente não ficou online em 20s. " +
+                    "Confira se a URL dos totens aponta para o IP LAN correto e se o servidor está escutando na rede. " +
+                    "No pacote Windows use INICIAR-TESTE-LOCAL.bat.");
+
+            if (!string.Equals(confirmed.privilegeMode, "su-root", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    $"O totem conectou, mas o próprio FleetTridi Agent reportou privilégio “{confirmed.privilegeMode}”. " +
+                    "Não faça teste de atualização remota até o app ter su-root.");
+
+            StatusText.Text = $"Bootstrap validado: {confirmed.name} online, agente {confirmed.agentVersion}, su-root confirmado pelo app.";
+            OutputBox.Text += "\n\nVALIDAÇÃO FINAL: agente online + su-root confirmado pelo próprio APK.";
         }
         catch (Exception ex) { MessageBox.Show(this, ex.Message, "Bootstrap ADB"); }
+    }
+
+    async Task<(string Serial, bool IsNetwork)> ResolveAdbTarget(string adb, string configured)
+    {
+        var value = configured.Trim();
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            var listing = await Run(adb, "devices");
+            var found = listing.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Where(line => line.EndsWith("\tdevice", StringComparison.Ordinal))
+                .Select(line => line.Split('\t')[0].Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (found.Length == 0)
+                throw new InvalidOperationException("Nenhum dispositivo ADB conectado. Conecte a BTV por USB ou informe o IP/serial no cadastro.");
+            if (found.Length > 1)
+                throw new InvalidOperationException("Há mais de um dispositivo ADB conectado. Informe o serial USB ou IP do totem no cadastro.");
+
+            return (found[0], false);
+        }
+
+        if (IPAddress.TryParse(value, out var ip) && ip.AddressFamily == AddressFamily.InterNetwork)
+            return (value.Contains(':') ? value : value + ":5555", true);
+
+        if (value.Contains(':'))
+            return (value, true);
+
+        if (value.Contains('.'))
+            return (value + ":5555", true);
+
+        return (value, false);
     }
 
     string FindAdb()
@@ -257,11 +403,12 @@ public partial class MainWindow : Window
         screenBusy = true;
         try
         {
+            var requestedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             await Job("captureScreen");
-            for (var i = 0; i < 5; i++)
+            for (var i = 0; i < 12; i++)
             {
-                await Task.Delay(300);
-                var r = await http.GetAsync($"api/devices/{selectedId}/screenshot?ts={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}");
+                await Task.Delay(250);
+                var r = await http.GetAsync($"api/devices/{selectedId}/screenshot?after={requestedAt}");
                 if (!r.IsSuccessStatusCode || r.StatusCode == System.Net.HttpStatusCode.NoContent) continue;
                 var bytes = await r.Content.ReadAsByteArrayAsync();
                 if (bytes.Length == 0) continue;
@@ -394,7 +541,9 @@ public partial class MainWindow : Window
             await using var fs = File.OpenRead(dlg.FileName);
             form.Add(new StreamContent(fs), "file", Path.GetFileName(dlg.FileName));
             form.Add(new StringContent(version), "version");
-            form.Add(new StringContent("com.tridi.audience"), "packageName");
+            var packageName = ReleasePackageBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(packageName)) packageName = "com.tridi.audience";
+            form.Add(new StringContent(packageName), "packageName");
             form.Add(new StringContent(string.IsNullOrWhiteSpace(ReleaseChannelBox.Text) ? "stable" : ReleaseChannelBox.Text.Trim()), "channel");
             form.Add(new StringContent("Cadastrado pelo FleetTridi Admin"), "notes");
 
@@ -462,8 +611,10 @@ public partial class MainWindow : Window
         public string androidVersion { get; set; } = "";
         public string agentVersion { get; set; } = "";
         public string audienceVersion { get; set; } = "";
+        public string audiencePackage { get; set; } = "";
         public string privilegeMode { get; set; } = "";
         public string updateChannel { get; set; } = "";
+        public string agentServerUrl { get; set; } = "";
         public bool online { get; set; }
         public bool rootAvailable { get; set; }
         public JsonElement telemetry { get; set; }
