@@ -4,26 +4,63 @@ on:
     branches: [ main, fleet-v0.4-rollouts ]
   pull_request:
   workflow_dispatch:
+
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Build Android agent for the all-in-one package
+        working-directory: android-agent
+        run: gradle assembleDebug
+
       - name: Publish FleetTridi Windows
         shell: pwsh
         run: ./scripts/build-windows.ps1
+
+      - name: Bundle FleetTridi Android agent
+        shell: pwsh
+        run: |
+          Copy-Item android-agent/app/build/outputs/apk/debug/app-debug.apk dist/FleetTridi-Windows/FleetTridi-Agent.apk -Force
+
       - name: Bundle official Android platform-tools
         shell: pwsh
         run: |
           Invoke-WebRequest https://dl.google.com/android/repository/platform-tools-latest-windows.zip -OutFile platform-tools.zip
           Expand-Archive platform-tools.zip -DestinationPath dist/FleetTridi-Windows -Force
+
       - name: Add quick start
         shell: pwsh
         run: |
-          "Configure FLEETTRIDI_ADMIN_PASSWORD antes de expor o servidor. Para teste local use FLEETTRIDI_DEV_MODE=1 e senha fleettridi-local." | Set-Content -Encoding UTF8 dist/FleetTridi-Windows/LEIA-ME.txt
+          @"
+          FLEETTRIDI v0.5 - INICIO RAPIDO
+
+          1. Abra FleetTridi.Central.exe.
+          2. A central local sobe automaticamente em 127.0.0.1:8787.
+          3. Login local: nanamicode
+             Senha local: veralucia12
+          4. Cadastre o totem pela interface.
+          5. No bootstrap ADB, selecione FleetTridi-Agent.apk deste mesmo pacote.
+          6. Depois do enrollment, o totem passa a conectar de saida ao servidor e o IP deixa de ser necessario no uso normal.
+
+          Para operar entre redes/cidades, execute FleetTridi.Server.exe em um servidor com URL publica HTTPS
+          e configure FLEETTRIDI_PUBLIC_URL + FLEETTRIDI_ADMIN_PASSWORD. Nao exponha ADB/5555 na Internet.
+          "@ | Set-Content -Encoding UTF8 dist/FleetTridi-Windows/LEIA-ME.txt
+
       - uses: actions/upload-artifact@v4
         with:
           name: FleetTridi-Windows
