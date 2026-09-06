@@ -398,11 +398,12 @@ public partial class MainWindow : Window
         screenBusy = true;
         try
         {
+            var requestedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             await Job("captureScreen");
-            for (var i = 0; i < 5; i++)
+            for (var i = 0; i < 12; i++)
             {
-                await Task.Delay(300);
-                var r = await http.GetAsync($"api/devices/{selectedId}/screenshot?ts={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}");
+                await Task.Delay(250);
+                var r = await http.GetAsync($"api/devices/{selectedId}/screenshot?after={requestedAt}");
                 if (!r.IsSuccessStatusCode || r.StatusCode == System.Net.HttpStatusCode.NoContent) continue;
                 var bytes = await r.Content.ReadAsByteArrayAsync();
                 if (bytes.Length == 0) continue;
