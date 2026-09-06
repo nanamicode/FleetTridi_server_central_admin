@@ -841,7 +841,10 @@ static ConcurrentDictionary<string, Device> LoadDevices(string path, JsonSeriali
         }
         return new ConcurrentDictionary<string, Device>(list.ToDictionary(x => x.Id, x => x));
     }
-    catch { return new(); }
+    catch (Exception ex)
+    {
+        throw new InvalidDataException($"Não foi possível carregar {path}. O servidor não vai sobrescrever um cadastro potencialmente corrompido.", ex);
+    }
 }
 
 static ConcurrentDictionary<string, ApkRelease> LoadReleases(string path, JsonSerializerOptions json)
@@ -852,7 +855,10 @@ static ConcurrentDictionary<string, ApkRelease> LoadReleases(string path, JsonSe
         var list = JsonSerializer.Deserialize<List<ApkRelease>>(File.ReadAllText(path), json) ?? [];
         return new ConcurrentDictionary<string, ApkRelease>(list.ToDictionary(x => x.Id, x => x));
     }
-    catch { return new(); }
+    catch (Exception ex)
+    {
+        throw new InvalidDataException($"Não foi possível carregar {path}. O servidor não vai sobrescrever um catálogo potencialmente corrompido.", ex);
+    }
 }
 
 static bool PackageNameIsValid(string value)
