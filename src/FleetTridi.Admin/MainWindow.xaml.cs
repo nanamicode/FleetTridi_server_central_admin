@@ -18,7 +18,9 @@ namespace FleetTridi.Admin;
 
 public partial class MainWindow : Window
 {
-    readonly HttpClient http = new() { Timeout = TimeSpan.FromMinutes(10) };
+    HttpClient http = NewHttpClient();
+
+    static HttpClient NewHttpClient() => new() { Timeout = TimeSpan.FromMinutes(10) };
     readonly DispatcherTimer liveTimer = new() { Interval = TimeSpan.FromMilliseconds(1200) };
     string token = "";
     string? selectedId;
@@ -37,7 +39,10 @@ public partial class MainWindow : Window
         if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri))
             throw new InvalidOperationException("URL do servidor Admin inválida.");
 
+        http.Dispose();
+        http = NewHttpClient();
         http.BaseAddress = new Uri(baseUrl + "/");
+
         var r = await http.PostAsJsonAsync("api/login", new { username = UserBox.Text, password = PassBox.Password });
         var body = await r.Content.ReadAsStringAsync();
         if (!r.IsSuccessStatusCode) throw new InvalidOperationException("Login recusado: " + body);
