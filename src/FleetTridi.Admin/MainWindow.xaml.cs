@@ -221,8 +221,9 @@ public partial class MainWindow : Window
                 log.AppendLine(await Run(adb, "connect", serial));
             log.AppendLine(await Run(adb, "-s", serial, "wait-for-device"));
 
-            log.AppendLine(await Run(adb, "-s", serial, "shell", "pm", "clear", "com.tridi.fleet.agent"));
-            log.AppendLine(await Run(adb, "-s", serial, "install", "-r", dlg.FileName));
+            // Provisionamento físico: reinstala o agente limpo. Isso também evita conflito de certificado entre builds DEBUG.
+            log.AppendLine(await Run(adb, "-s", serial, "uninstall", "com.tridi.fleet.agent"));
+            log.AppendLine(await Run(adb, "-s", serial, "install", dlg.FileName));
 
             var shellRootCheck = await Run(adb, "-s", serial, "shell", "su", "-c", "id");
             log.AppendLine(shellRootCheck);
