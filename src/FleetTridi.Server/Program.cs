@@ -24,8 +24,10 @@ if (string.IsNullOrWhiteSpace(adminPassword))
     adminPassword = "fleettridi-local";
 }
 
-var adminToken = Environment.GetEnvironmentVariable("FLEETTRIDI_ADMIN_TOKEN")
-    ?? Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+var configuredAdminToken = Environment.GetEnvironmentVariable("FLEETTRIDI_ADMIN_TOKEN");
+var adminToken = string.IsNullOrWhiteSpace(configuredAdminToken)
+    ? Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant()
+    : configuredAdminToken.Trim();
 
 var allowLegacyAgentAuth = devMode || Environment.GetEnvironmentVariable("FLEETTRIDI_ALLOW_LEGACY_AGENT_AUTH") == "1";
 var allowLegacyFileDownloads = devMode || Environment.GetEnvironmentVariable("FLEETTRIDI_ALLOW_LEGACY_FILE_DOWNLOADS") == "1";
@@ -129,6 +131,13 @@ async Task<JobState> QueueJob(Device d, string type, Dictionary<string, string>?
     var state = new JobState(job.Id, job.Type, "queued", null, DateTimeOffset.UtcNow, job.Args);
     d.Jobs[job.Id] = state;
 
+    // Evita que a persistência cresça indefinidamente em equipamentos de longa duração.
+    if (d.Jobs.Count > 500)
+    {
+        foreach (var old in d.Jobs.Values.OrderByDescending(x => x.UpdatedAt).Skip(500).ToArray())
+            d.Jobs.TryRemove(old.Id, out _);
+    }
+
     if (sessions.TryGetValue(d.Id, out var ch))
     {
         await ch.Writer.WriteAsync(JsonSerializer.Serialize(new { type = "job", job }, json));
@@ -185,7 +194,7 @@ TargetSelector SelectorFromForm(IFormCollection form)
 app.MapGet("/", () => Results.Ok(new
 {
     name = "FleetTridi Server",
-    version = "0.4.0",
+    version = "0.4.1",
     devices = devices.Count,
     releases = releases.Count,
     devMode,
@@ -383,12 +392,17 @@ app.MapPost("/api/devices/{id}/install-apk", async (string id, HttpContext c) =>
     if (file is null) return Results.BadRequest("file required");
 
     var upload = await SaveUpload(file);
+    var packageName = form["packageName"].ToString().Trim();
+    if (string.IsNullOrWhiteSpace(packageName)) packageName = "com.tridi.audience";
+    if (!PackageNameIsValid(packageName)) return Results.BadRequest("invalid packageName");
+
     return Results.Ok(await QueueJob(d, "installApk", new()
     {
         ["url"] = FileUrl(c, upload.Key),
         ["sha256"] = upload.Sha256,
-        ["packageName"] = form["packageName"].ToString(),
-        ["expectedVersion"] = form["version"].ToString()
+        ["packageName"] = packageName,
+        ["expectedVersion"] = form["version"].ToString().Trim(),
+        ["restartAfterInstall"] = "true"
     }));
 });
 
@@ -425,6 +439,10 @@ app.MapPost("/api/bulk/install-apk", async (HttpContext c) =>
     if (file is null) return Results.BadRequest("file required");
 
     var upload = await SaveUpload(file);
+    var packageName = form["packageName"].ToString().Trim();
+    if (string.IsNullOrWhiteSpace(packageName)) packageName = "com.tridi.audience";
+    if (!PackageNameIsValid(packageName)) return Results.BadRequest("invalid packageName");
+
     var targets = ResolveTargets(SelectorFromForm(form)).ToArray();
     var jobs = new List<JobState>();
     foreach (var d in targets)
@@ -432,8 +450,9 @@ app.MapPost("/api/bulk/install-apk", async (HttpContext c) =>
         {
             ["url"] = FileUrl(c, upload.Key),
             ["sha256"] = upload.Sha256,
-            ["packageName"] = form["packageName"].ToString(),
-            ["expectedVersion"] = form["version"].ToString()
+            ["packageName"] = packageName,
+            ["expectedVersion"] = form["version"].ToString().Trim(),
+            ["restartAfterInstall"] = "true"
         }));
     return Results.Ok(new { count = jobs.Count, deviceIds = targets.Select(x => x.Id), sha256 = upload.Sha256, jobs });
 });
@@ -459,13 +478,26 @@ app.MapPost("/api/releases", async (HttpContext c) =>
     if (file is null || string.IsNullOrWhiteSpace(version)) return Results.BadRequest("file + version required");
     if (!file.FileName.EndsWith(".apk", StringComparison.OrdinalIgnoreCase)) return Results.BadRequest("APK required");
 
+    var packageName = string.IsNullOrWhiteSpace(form["packageName"])
+        ? "com.tridi.audience"
+        : form["packageName"].ToString().Trim();
+    if (!PackageNameIsValid(packageName)) return Results.BadRequest("invalid packageName");
+
+    var channel = string.IsNullOrWhiteSpace(form["channel"]) ? "stable" : form["channel"].ToString().Trim();
+    var existing = releases.Values.FirstOrDefault(r =>
+        string.Equals(r.PackageName, packageName, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(r.Channel, channel, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(r.Version, version, StringComparison.OrdinalIgnoreCase));
+    if (existing is not null)
+        return Results.Conflict(new { message = "release version already exists in this channel", existing.Id, existing.Sha256 });
+
     var upload = await SaveUpload(file);
     var release = new ApkRelease
     {
         Id = Guid.NewGuid().ToString("N"),
         Version = version,
-        PackageName = string.IsNullOrWhiteSpace(form["packageName"]) ? "com.tridi.audience" : form["packageName"].ToString().Trim(),
-        Channel = string.IsNullOrWhiteSpace(form["channel"]) ? "stable" : form["channel"].ToString().Trim(),
+        PackageName = packageName,
+        Channel = channel,
         Notes = form["notes"].ToString().Trim(),
         FileKey = upload.Key,
         OriginalName = upload.OriginalName,
@@ -496,7 +528,14 @@ app.MapPost("/api/releases/{releaseId}/deploy", async (string releaseId, HttpCon
         Tag = req.Tag
     };
 
-    var targets = ResolveTargets(selector).ToArray();
+    var resolved = ResolveTargets(selector).ToArray();
+    var skippedCurrent = req.Force
+        ? Array.Empty<Device>()
+        : resolved.Where(d => string.Equals(d.AudienceVersion, release.Version, StringComparison.OrdinalIgnoreCase)).ToArray();
+    var targets = req.Force
+        ? resolved
+        : resolved.Where(d => !string.Equals(d.AudienceVersion, release.Version, StringComparison.OrdinalIgnoreCase)).ToArray();
+
     var percent = Math.Clamp(req.Percent <= 0 ? 100 : req.Percent, 1, 100);
     var take = targets.Length == 0 ? 0 : Math.Max(1, (int)Math.Ceiling(targets.Length * (percent / 100.0)));
     targets = targets.OrderBy(x => x.Id, StringComparer.Ordinal).Take(take).ToArray();
@@ -507,8 +546,10 @@ app.MapPost("/api/releases/{releaseId}/deploy", async (string releaseId, HttpCon
             dryRun = true,
             release = new { release.Id, release.Version, release.Channel, release.Sha256 },
             percent,
+            force = req.Force,
             count = targets.Length,
-            devices = targets.Select(x => new { x.Id, x.Name, x.City, x.Site, x.AudienceVersion })
+            skippedAlreadyCurrent = skippedCurrent.Length,
+            devices = targets.Select(x => new { x.Id, x.Name, x.City, x.Site, x.AudienceVersion, x.PrivilegeMode })
         });
 
     var rolloutId = Guid.NewGuid().ToString("N");
@@ -522,7 +563,8 @@ app.MapPost("/api/releases/{releaseId}/deploy", async (string releaseId, HttpCon
             ["packageName"] = release.PackageName,
             ["expectedVersion"] = release.Version,
             ["releaseId"] = release.Id,
-            ["rolloutId"] = rolloutId
+            ["rolloutId"] = rolloutId,
+            ["restartAfterInstall"] = "true"
         }));
     }
 
@@ -758,6 +800,16 @@ static ConcurrentDictionary<string, ApkRelease> LoadReleases(string path, JsonSe
     catch { return new(); }
 }
 
+static bool PackageNameIsValid(string value)
+{
+    if (string.IsNullOrWhiteSpace(value) || value.Length > 200) return false;
+    var parts = value.Split('.', StringSplitOptions.RemoveEmptyEntries);
+    if (parts.Length < 2) return false;
+    return parts.All(part =>
+        char.IsLetter(part[0]) &&
+        part.All(ch => char.IsLetterOrDigit(ch) || ch == '_'));
+}
+
 record LoginRequest(string? Username, string? Password);
 record CreateDeviceRequest(string? Id, string? Name, string? City, string? Site, string? InitialIp, string? UpdateChannel, string[]? Tags);
 record UpdateDeviceRequest(string? Name, string? City, string? Site, string? UpdateChannel, string[]? Tags);
@@ -790,6 +842,7 @@ sealed class DeployReleaseRequest
     public string? Tag { get; set; }
     public int Percent { get; set; } = 100;
     public bool DryRun { get; set; }
+    public bool Force { get; set; }
 }
 
 sealed class ApkRelease
