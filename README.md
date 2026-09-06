@@ -2,89 +2,102 @@
 
 Central de gerenciamento remoto da frota TridiAudience.
 
-## Estado atual - v0.3
+## Estado atual — v0.4
 
-A base funcional agora contém:
+A solução foi desenhada para crescer de uma cidade pequena para múltiplas cidades sem depender de IP fixo nem de ADB exposto na Internet.
 
-- FleetTridi.Server em .NET 8;
-- FleetTridi.Admin para Windows;
-- FleetTridi Agent para Android 9+;
-- cadastro por deviceId;
-- bootstrap ADB uma única vez;
-- conexão persistente do totem para o servidor;
+### Componentes
+
+- **FleetTridi.Server (.NET 8):** central online, identidade dos dispositivos, catálogo de versões, jobs, auditoria e distribuição de arquivos.
+- **FleetTridi.Admin (Windows):** cadastro, bootstrap ADB, controle remoto, manutenção e ações em massa.
+- **FleetTridi Agent (Android 9+):** inicia no boot, mantém conexão de saída e executa somente o conjunto permitido de operações.
+- **GitHub Actions:** gera pacote Windows e APK do agente.
+
+### O que já funciona
+
+- cadastro de N totens por `deviceId`;
+- cidade, ponto/local, tags e canal de atualização;
+- bootstrap inicial por ADB;
+- conexão persistente de saída via WebSocket;
 - reconexão automática e inicialização no boot;
-- online/offline e último IP;
-- telemetria de hardware;
+- online/offline, último IP e telemetria;
+- modo de privilégio reportado pelo totem;
 - instalação/atualização remota de APK;
-- envio remoto de arquivos;
-- atualização de APK e arquivos em massa;
-- reinício do TridiAudience;
-- reboot do equipamento;
-- captura de tela;
-- clique remoto, HOME, BACK, setas e keyevents;
-- persistência da frota e dos jobs;
-- Docker para hospedar a central;
-- builds automáticos para Windows e APK pelo GitHub Actions.
+- catálogo permanente de versões do TridiAudience;
+- SHA-256 calculado pelo servidor e validado no totem;
+- confirmação da versão instalada;
+- rollout por IDs, cidade, local, tag ou canal;
+- rollout percentual para teste gradual;
+- `dryRun` para visualizar os alvos antes de atualizar;
+- atualização em massa;
+- reentrega de jobs após reconexão;
+- reinício do TridiAudience e do Android;
+- envio de arquivos apenas para áreas permitidas;
+- screenshot e controle básico de entrada;
+- rotação do token individual do dispositivo;
+- log de auditoria;
+- Docker para o servidor.
 
-## Por que não controlar pela lista de IPs
+## ADB não fica aberto na Internet
 
-IP local não atravessa NAT/CGNAT e IP público pode mudar. Por isso o IP é apenas informação auxiliar.
+O IP é usado somente no primeiro provisionamento. Depois disso:
 
-Depois do enrollment, cada totem mantém uma conexão de saída com o FleetTridi.Server. Assim um Admin no Rio pode comandar um totem em São Paulo desde que ambos alcancem o servidor central.
+```
+FleetTridi.Admin -> HTTPS -> FleetTridi.Server <- WSS <- FleetTridi Agent
+```
 
-## Credenciais de desenvolvimento
+Cada totem abre uma conexão **de saída** até a central. Isso funciona mesmo quando o equipamento está atrás de NAT/CGNAT ou muda de IP.
 
-Login: nanamicode
+Não exponha a porta ADB 5555 publicamente.
 
-Senha: veralucia12
+## Sobre “ADB root uma vez e root para sempre”
 
-Esses valores são os padrões solicitados para a fase atual e podem ser substituídos por variáveis de ambiente.
+`adb root` eleva o processo `adbd` quando a ROM permite, mas isso **não garante** que um APK comum terá root depois que a sessão ADB acabar.
 
-## Build pronto para baixar
+A v0.4 detecta e mostra o modo real de privilégio. Para instalação silenciosa e reboot remotos, o agente atual precisa de **`su` persistente** no equipamento (ou, futuramente, ser integrado à imagem Android como app de sistema/Device Owner com as permissões adequadas).
 
-Na aba Actions:
+O bootstrap deve falhar de forma explícita quando esse pré-requisito não existir, em vez de cadastrar um totem aparentemente gerenciável que depois não consegue atualizar APK.
 
-- build-windows gera FleetTridi-Windows;
-- build-android gera FleetTridi-Agent-APK.
+## Segurança de produção
 
-O pacote Windows inclui o Admin, o Server e Android platform-tools oficial para o bootstrap ADB.
+Não há mais senha administrativa de produção hardcoded.
 
-## Primeiro teste
+Defina pelo menos:
 
-1. Execute FleetTridi.Server.exe.
-2. Abra FleetTridi.Admin.exe.
-3. Use http://localhost:8787.
-4. Entre com as credenciais acima.
-5. Clique Adicionar totem.
-6. Informe nome, cidade, local e IP inicial.
-7. Selecione o totem e clique Bootstrap via ADB.
-8. Escolha o FleetTridi Agent APK.
-9. Depois que aparecer online, teste captura da tela, HOME/BACK, APK e envio de arquivo.
+- `FLEETTRIDI_ADMIN_PASSWORD`
+- `FLEETTRIDI_PUBLIC_URL=https://fleet.seudominio.com`
 
-## Uso entre cidades
+Use TLS/HTTPS na frente do servidor. Downloads são autenticados por dispositivo e o agente valida SHA-256 antes de instalar.
 
-FleetTridi.Server precisa ficar em um endereço alcançável pela Internet. Pode ser uma máquina da própria empresa com IP público/porta encaminhada ou um servidor Linux próprio.
+Para desenvolvimento estritamente local:
 
-Para arquivos e APKs, configure FLEETTRIDI_PUBLIC_URL com o endereço público da central.
+```powershell
+$env:FLEETTRIDI_DEV_MODE="1"
+dotnet run --project src/FleetTridi.Server
+```
 
-Veja docs/ARCHITECTURE.md e docs/DEPLOYMENT.md.
+Nesse modo o servidor escuta apenas em localhost por padrão e a senha de desenvolvimento é `fleettridi-local`.
 
-## Pastas
+## Fluxo de atualização recomendado
 
-- src/FleetTridi.Server
-- src/FleetTridi.Admin
-- android-agent
-- scripts
-- docker
-- docs
+1. Cadastre o APK como uma **release** com versão, package name e canal.
+2. Faça um `dryRun` em um ou poucos totens.
+3. Atualize um pequeno percentual da cidade.
+4. Confira jobs e a versão instalada reportada.
+5. Amplie para 100%.
+6. Para rollback, faça deploy de uma release anterior do catálogo.
 
-## Próximos degraus
+O mesmo arquivo é armazenado uma vez e referenciado pelos jobs de N totens.
 
-- stream H.264 de baixa latência;
-- grupos por cidade/local;
-- versionamento do TridiAudience por dispositivo;
-- rollout percentual;
-- rollback automático;
-- dashboard histórico de temperatura/memória/uptime;
-- atualização agendada;
-- TLS e rotação de tokens antes da implantação pública.
+## Build
+
+Na aba **Actions**:
+
+- `build-windows` gera `FleetTridi-Windows`;
+- `build-android` gera `FleetTridi-Agent-APK`.
+
+Consulte:
+
+- `docs/ARCHITECTURE.md`
+- `docs/DEPLOYMENT.md`
+- `docs/RELEASES.md`
