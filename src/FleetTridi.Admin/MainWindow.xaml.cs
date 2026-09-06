@@ -140,13 +140,22 @@ public partial class MainWindow : Window
             log.AppendLine(await Run(adb, "connect", serial));
             log.AppendLine(await Run(adb, "-s", serial, "wait-for-device"));
 
-            // adb root works only on root-enabled adbd. The following su command covers rooted production boxes.
+            // adb root eleva o adbd quando a ROM permite, mas não garante root persistente para um APK.
             log.AppendLine(await Run(adb, "-s", serial, "root"));
             await Task.Delay(700);
             log.AppendLine(await Run(adb, "connect", serial));
+            log.AppendLine(await Run(adb, "-s", serial, "wait-for-device"));
+
+            // Em manutenção local é seguro limpar somente o agente para garantir que o enrollment one-shot seja aceito.
+            log.AppendLine(await Run(adb, "-s", serial, "shell", "pm", "clear", "com.tridi.fleet.agent"));
             log.AppendLine(await Run(adb, "-s", serial, "install", "-r", dlg.FileName));
-            log.AppendLine(await Run(adb, "-s", serial, "shell", "settings", "put", "global", "adb_enabled", "1"));
-            log.AppendLine(await Run(adb, "-s", serial, "shell", "su", "-c", "setprop persist.sys.usb.config adb"));
+
+            var rootCheck = await Run(adb, "-s", serial, "shell", "su", "-c", "id");
+            log.AppendLine(rootCheck);
+            if (!rootCheck.Contains("uid=0", StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    "O agente foi instalado, mas não há su/root persistente disponível para o app. " +
+                    "Sem isso, instalação silenciosa de APK e reboot remoto não serão confiáveis após o ADB sair da operação.");
 
             var server = ServerBox.Text.TrimEnd('/');
             log.AppendLine(await Run(adb, "-s", serial, "shell", "am", "broadcast",
@@ -157,10 +166,11 @@ public partial class MainWindow : Window
                 "--es", "token", enrollment.enrollmentToken,
                 "--es", "name", enrollment.name ?? "",
                 "--es", "city", enrollment.city ?? "",
-                "--es", "site", enrollment.site ?? ""));
+                "--es", "site", enrollment.site ?? "",
+                "--es", "audiencePackage", "com.tridi.audience"));
 
             OutputBox.Text = log.ToString();
-            StatusText.Text = "Bootstrap enviado. O agente deve aparecer online em alguns segundos.";
+            StatusText.Text = "Bootstrap concluído com root persistente validado. ADB não é necessário para o controle normal.";
             await Task.Delay(1800);
             await Refresh();
         }
