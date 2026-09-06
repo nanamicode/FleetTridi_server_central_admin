@@ -6,7 +6,7 @@
     <Border Margin="18" Background="White" CornerRadius="12" Padding="18">
         <StackPanel>
             <TextBlock Text="Cadastrar novo totem" FontSize="22" FontWeight="SemiBold"/>
-            <TextBlock Text="O IP é usado apenas no bootstrap inicial por ADB. Depois o agente se conecta sozinho pela internet."
+            <TextBlock Text="No bootstrap você pode usar cabo USB (deixe vazio ou informe o serial) ou ADB por IP. Depois o agente se conecta sozinho pela rede."
                        TextWrapping="Wrap" Foreground="#6F6B78" Margin="0,5,0,14"/>
             <TextBlock Text="Nome"/>
             <TextBox x:Name="NameBox" Padding="7" Margin="0,3,0,9"/>
@@ -14,7 +14,7 @@
             <TextBox x:Name="CityBox" Padding="7" Margin="0,3,0,9"/>
             <TextBlock Text="Local / ponto"/>
             <TextBox x:Name="SiteBox" Padding="7" Margin="0,3,0,9"/>
-            <TextBlock Text="IP inicial"/>
+            <TextBlock Text="ADB inicial — IP, serial USB ou vazio para autodetectar"/>
             <TextBox x:Name="IpBox" Padding="7" Margin="0,3,0,14"/>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                 <Button Content="Cancelar" Click="Cancel_Click" Padding="12,7" Margin="0,0,8,0"/>
