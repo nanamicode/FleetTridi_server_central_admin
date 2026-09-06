@@ -24,8 +24,10 @@ if (string.IsNullOrWhiteSpace(adminPassword))
     adminPassword = "fleettridi-local";
 }
 
-var adminToken = Environment.GetEnvironmentVariable("FLEETTRIDI_ADMIN_TOKEN")
-    ?? Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+var configuredAdminToken = Environment.GetEnvironmentVariable("FLEETTRIDI_ADMIN_TOKEN");
+var adminToken = string.IsNullOrWhiteSpace(configuredAdminToken)
+    ? Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant()
+    : configuredAdminToken.Trim();
 
 var allowLegacyAgentAuth = devMode || Environment.GetEnvironmentVariable("FLEETTRIDI_ALLOW_LEGACY_AGENT_AUTH") == "1";
 var allowLegacyFileDownloads = devMode || Environment.GetEnvironmentVariable("FLEETTRIDI_ALLOW_LEGACY_FILE_DOWNLOADS") == "1";
@@ -84,7 +86,25 @@ bool IsOnline(Device d) => (DateTimeOffset.UtcNow - d.LastSeen).TotalSeconds < 3
 string PublicBaseUrl(HttpContext c) =>
     (Environment.GetEnvironmentVariable("FLEETTRIDI_PUBLIC_URL") ?? $"{c.Request.Scheme}://{c.Request.Host}").TrimEnd('/');
 
-string FileUrl(HttpContext c, string key) => $"{PublicBaseUrl(c)}/agent/files/{Uri.EscapeDataString(key)}";
+bool IsNonLoopbackHttpUrl(string? value)
+{
+    if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)) return false;
+    return (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps) && !uri.IsLoopback;
+}
+
+string DeviceBaseUrl(HttpContext c, Device? d)
+{
+    var configured = Environment.GetEnvironmentVariable("FLEETTRIDI_PUBLIC_URL")?.TrimEnd('/');
+    if (!string.IsNullOrWhiteSpace(configured)) return configured;
+
+    if (d is not null && IsNonLoopbackHttpUrl(d.AgentServerUrl))
+        return d.AgentServerUrl.TrimEnd('/');
+
+    return PublicBaseUrl(c);
+}
+
+string FileUrl(HttpContext c, Device? d, string key) =>
+    $"{DeviceBaseUrl(c, d)}/agent/files/{Uri.EscapeDataString(key)}";
 
 async Task SaveDevicesAsync()
 {
@@ -128,6 +148,13 @@ async Task<JobState> QueueJob(Device d, string type, Dictionary<string, string>?
     var job = new JobEnvelope(Guid.NewGuid().ToString("N"), type, args ?? new());
     var state = new JobState(job.Id, job.Type, "queued", null, DateTimeOffset.UtcNow, job.Args);
     d.Jobs[job.Id] = state;
+
+    // Evita que a persistência cresça indefinidamente em equipamentos de longa duração.
+    if (d.Jobs.Count > 500)
+    {
+        foreach (var old in d.Jobs.Values.OrderByDescending(x => x.UpdatedAt).Skip(500).ToArray())
+            d.Jobs.TryRemove(old.Id, out _);
+    }
 
     if (sessions.TryGetValue(d.Id, out var ch))
     {
@@ -185,7 +212,7 @@ TargetSelector SelectorFromForm(IFormCollection form)
 app.MapGet("/", () => Results.Ok(new
 {
     name = "FleetTridi Server",
-    version = "0.4.0",
+    version = "0.4.1",
     devices = devices.Count,
     releases = releases.Count,
     devMode,
@@ -214,7 +241,7 @@ app.MapGet("/api/devices", (HttpContext c) =>
     {
         d.Id, d.Name, d.City, d.Site, d.Tags, d.UpdateChannel, d.InitialIp, d.LastIp,
         d.Model, d.AndroidVersion, d.AgentVersion, d.PrivilegeMode, d.RootAvailable,
-        d.AudiencePackage, d.AudienceVersion, d.LastSeen, online = IsOnline(d), d.Telemetry
+        d.AudiencePackage, d.AudienceVersion, d.AgentServerUrl, d.LastSeen, online = IsOnline(d), d.Telemetry
     }).OrderBy(x => x.City).ThenBy(x => x.Site).ThenBy(x => x.Name));
 });
 
@@ -366,7 +393,7 @@ app.MapPost("/api/devices/{id}/upload", async (string id, HttpContext c) =>
     var upload = await SaveUpload(file);
     return Results.Ok(await QueueJob(d, "pushFile", new()
     {
-        ["url"] = FileUrl(c, upload.Key),
+        ["url"] = FileUrl(c, d, upload.Key),
         ["target"] = target,
         ["sha256"] = upload.Sha256
     }));
@@ -383,12 +410,17 @@ app.MapPost("/api/devices/{id}/install-apk", async (string id, HttpContext c) =>
     if (file is null) return Results.BadRequest("file required");
 
     var upload = await SaveUpload(file);
+    var packageName = form["packageName"].ToString().Trim();
+    if (string.IsNullOrWhiteSpace(packageName)) packageName = "com.tridi.audience";
+    if (!PackageNameIsValid(packageName)) return Results.BadRequest("invalid packageName");
+
     return Results.Ok(await QueueJob(d, "installApk", new()
     {
-        ["url"] = FileUrl(c, upload.Key),
+        ["url"] = FileUrl(c, d, upload.Key),
         ["sha256"] = upload.Sha256,
-        ["packageName"] = form["packageName"].ToString(),
-        ["expectedVersion"] = form["version"].ToString()
+        ["packageName"] = packageName,
+        ["expectedVersion"] = form["version"].ToString().Trim(),
+        ["restartAfterInstall"] = "true"
     }));
 });
 
@@ -408,7 +440,7 @@ app.MapPost("/api/bulk/upload", async (HttpContext c) =>
     foreach (var d in targets)
         jobs.Add(await QueueJob(d, "pushFile", new()
         {
-            ["url"] = FileUrl(c, upload.Key),
+            ["url"] = FileUrl(c, d, upload.Key),
             ["target"] = target,
             ["sha256"] = upload.Sha256
         }));
@@ -425,15 +457,20 @@ app.MapPost("/api/bulk/install-apk", async (HttpContext c) =>
     if (file is null) return Results.BadRequest("file required");
 
     var upload = await SaveUpload(file);
+    var packageName = form["packageName"].ToString().Trim();
+    if (string.IsNullOrWhiteSpace(packageName)) packageName = "com.tridi.audience";
+    if (!PackageNameIsValid(packageName)) return Results.BadRequest("invalid packageName");
+
     var targets = ResolveTargets(SelectorFromForm(form)).ToArray();
     var jobs = new List<JobState>();
     foreach (var d in targets)
         jobs.Add(await QueueJob(d, "installApk", new()
         {
-            ["url"] = FileUrl(c, upload.Key),
+            ["url"] = FileUrl(c, d, upload.Key),
             ["sha256"] = upload.Sha256,
-            ["packageName"] = form["packageName"].ToString(),
-            ["expectedVersion"] = form["version"].ToString()
+            ["packageName"] = packageName,
+            ["expectedVersion"] = form["version"].ToString().Trim(),
+            ["restartAfterInstall"] = "true"
         }));
     return Results.Ok(new { count = jobs.Count, deviceIds = targets.Select(x => x.Id), sha256 = upload.Sha256, jobs });
 });
@@ -459,13 +496,26 @@ app.MapPost("/api/releases", async (HttpContext c) =>
     if (file is null || string.IsNullOrWhiteSpace(version)) return Results.BadRequest("file + version required");
     if (!file.FileName.EndsWith(".apk", StringComparison.OrdinalIgnoreCase)) return Results.BadRequest("APK required");
 
+    var packageName = string.IsNullOrWhiteSpace(form["packageName"])
+        ? "com.tridi.audience"
+        : form["packageName"].ToString().Trim();
+    if (!PackageNameIsValid(packageName)) return Results.BadRequest("invalid packageName");
+
+    var channel = string.IsNullOrWhiteSpace(form["channel"]) ? "stable" : form["channel"].ToString().Trim();
+    var existing = releases.Values.FirstOrDefault(r =>
+        string.Equals(r.PackageName, packageName, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(r.Channel, channel, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(r.Version, version, StringComparison.OrdinalIgnoreCase));
+    if (existing is not null)
+        return Results.Conflict(new { message = "release version already exists in this channel", existing.Id, existing.Sha256 });
+
     var upload = await SaveUpload(file);
     var release = new ApkRelease
     {
         Id = Guid.NewGuid().ToString("N"),
         Version = version,
-        PackageName = string.IsNullOrWhiteSpace(form["packageName"]) ? "com.tridi.audience" : form["packageName"].ToString().Trim(),
-        Channel = string.IsNullOrWhiteSpace(form["channel"]) ? "stable" : form["channel"].ToString().Trim(),
+        PackageName = packageName,
+        Channel = channel,
         Notes = form["notes"].ToString().Trim(),
         FileKey = upload.Key,
         OriginalName = upload.OriginalName,
@@ -496,7 +546,14 @@ app.MapPost("/api/releases/{releaseId}/deploy", async (string releaseId, HttpCon
         Tag = req.Tag
     };
 
-    var targets = ResolveTargets(selector).ToArray();
+    var resolved = ResolveTargets(selector).ToArray();
+    var skippedCurrent = req.Force
+        ? Array.Empty<Device>()
+        : resolved.Where(d => string.Equals(d.AudienceVersion, release.Version, StringComparison.OrdinalIgnoreCase)).ToArray();
+    var targets = req.Force
+        ? resolved
+        : resolved.Where(d => !string.Equals(d.AudienceVersion, release.Version, StringComparison.OrdinalIgnoreCase)).ToArray();
+
     var percent = Math.Clamp(req.Percent <= 0 ? 100 : req.Percent, 1, 100);
     var take = targets.Length == 0 ? 0 : Math.Max(1, (int)Math.Ceiling(targets.Length * (percent / 100.0)));
     targets = targets.OrderBy(x => x.Id, StringComparer.Ordinal).Take(take).ToArray();
@@ -507,8 +564,10 @@ app.MapPost("/api/releases/{releaseId}/deploy", async (string releaseId, HttpCon
             dryRun = true,
             release = new { release.Id, release.Version, release.Channel, release.Sha256 },
             percent,
+            force = req.Force,
             count = targets.Length,
-            devices = targets.Select(x => new { x.Id, x.Name, x.City, x.Site, x.AudienceVersion })
+            skippedAlreadyCurrent = skippedCurrent.Length,
+            devices = targets.Select(x => new { x.Id, x.Name, x.City, x.Site, x.AudienceVersion, x.PrivilegeMode })
         });
 
     var rolloutId = Guid.NewGuid().ToString("N");
@@ -517,12 +576,13 @@ app.MapPost("/api/releases/{releaseId}/deploy", async (string releaseId, HttpCon
     {
         jobs.Add(await QueueJob(d, "installApk", new()
         {
-            ["url"] = FileUrl(c, release.FileKey),
+            ["url"] = FileUrl(c, d, release.FileKey),
             ["sha256"] = release.Sha256,
             ["packageName"] = release.PackageName,
             ["expectedVersion"] = release.Version,
             ["releaseId"] = release.Id,
-            ["rolloutId"] = rolloutId
+            ["rolloutId"] = rolloutId,
+            ["restartAfterInstall"] = "true"
         }));
     }
 
@@ -571,8 +631,19 @@ app.MapGet("/api/devices/{id}/screenshot", (string id, HttpContext c) =>
 {
     if (!IsAdmin(c)) return Results.Unauthorized();
     if (!devices.TryGetValue(id, out var d)) return Results.NotFound();
-    if (string.IsNullOrWhiteSpace(d.LastScreenshotBase64)) return Results.NoContent();
-    try { return Results.File(Convert.FromBase64String(d.LastScreenshotBase64), "image/png"); }
+    if (string.IsNullOrWhiteSpace(d.LastScreenshotBase64) || d.LastScreenshotAt is null) return Results.NoContent();
+
+    if (long.TryParse(c.Request.Query["after"], out var afterMs))
+    {
+        var after = DateTimeOffset.FromUnixTimeMilliseconds(afterMs);
+        if (d.LastScreenshotAt <= after) return Results.NoContent();
+    }
+
+    try
+    {
+        c.Response.Headers["X-Fleet-Screenshot-At"] = d.LastScreenshotAt.Value.ToUnixTimeMilliseconds().ToString();
+        return Results.File(Convert.FromBase64String(d.LastScreenshotBase64), "image/png");
+    }
     catch { return Results.Problem("invalid screenshot payload"); }
 });
 
@@ -663,6 +734,7 @@ app.Map("/agent", async c =>
                 device.AgentVersion = root.TryGetProperty("agentVersion", out var ag) ? ag.GetString() ?? "" : "";
                 device.PrivilegeMode = root.TryGetProperty("privilegeMode", out var pm) ? pm.GetString() ?? "unknown" : "unknown";
                 device.RootAvailable = root.TryGetProperty("rootAvailable", out var ra) && ra.GetBoolean();
+                device.AgentServerUrl = root.TryGetProperty("serverUrl", out var su) ? su.GetString() ?? device.AgentServerUrl : device.AgentServerUrl;
                 device.AudiencePackage = root.TryGetProperty("audiencePackage", out var ap) ? ap.GetString() ?? "" : "";
                 device.AudienceVersion = root.TryGetProperty("audienceVersion", out var aVer) ? aVer.GetString() ?? "" : "";
                 await SaveDevicesAsync();
@@ -758,6 +830,16 @@ static ConcurrentDictionary<string, ApkRelease> LoadReleases(string path, JsonSe
     catch { return new(); }
 }
 
+static bool PackageNameIsValid(string value)
+{
+    if (string.IsNullOrWhiteSpace(value) || value.Length > 200) return false;
+    var parts = value.Split('.', StringSplitOptions.RemoveEmptyEntries);
+    if (parts.Length < 2) return false;
+    return parts.All(part =>
+        char.IsLetter(part[0]) &&
+        part.All(ch => char.IsLetterOrDigit(ch) || ch == '_'));
+}
+
 record LoginRequest(string? Username, string? Password);
 record CreateDeviceRequest(string? Id, string? Name, string? City, string? Site, string? InitialIp, string? UpdateChannel, string[]? Tags);
 record UpdateDeviceRequest(string? Name, string? City, string? Site, string? UpdateChannel, string[]? Tags);
@@ -790,6 +872,7 @@ sealed class DeployReleaseRequest
     public string? Tag { get; set; }
     public int Percent { get; set; } = 100;
     public bool DryRun { get; set; }
+    public bool Force { get; set; }
 }
 
 sealed class ApkRelease
@@ -822,6 +905,7 @@ sealed class Device
     public string AgentVersion { get; set; } = "";
     public string PrivilegeMode { get; set; } = "unknown";
     public bool RootAvailable { get; set; }
+    public string AgentServerUrl { get; set; } = "";
     public string AudiencePackage { get; set; } = "";
     public string AudienceVersion { get; set; } = "";
     public DateTimeOffset LastSeen { get; set; } = DateTimeOffset.MinValue;
