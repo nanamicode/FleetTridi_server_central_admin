@@ -3,6 +3,10 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 android {
     namespace = "com.tridi.fleet.agent"
     compileSdk = 35
+    buildFeatures {
+        buildConfig = true
+    }
+
     defaultConfig {
         applicationId = "com.tridi.fleet.agent"
         minSdk = 28
