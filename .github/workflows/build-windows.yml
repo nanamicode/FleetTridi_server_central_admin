@@ -9,11 +9,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
-        with: { dotnet-version: '8.0.x' }
-      - name: Publish
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish FleetTridi Windows
         shell: pwsh
         run: ./scripts/build-windows.ps1
+      - name: Bundle official Android platform-tools
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://dl.google.com/android/repository/platform-tools-latest-windows.zip -OutFile platform-tools.zip
+          Expand-Archive platform-tools.zip -DestinationPath dist/FleetTridi-Windows -Force
+      - name: Add quick start
+        shell: pwsh
+        run: |
+          "Execute FleetTridi.Server.exe e depois FleetTridi.Admin.exe. Login padrao: nanamicode / veralucia12" | Set-Content -Encoding UTF8 dist/FleetTridi-Windows/LEIA-ME.txt
       - uses: actions/upload-artifact@v4
         with:
           name: FleetTridi-Windows
-          path: dist/**
+          path: dist/FleetTridi-Windows/**

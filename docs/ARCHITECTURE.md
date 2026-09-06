@@ -1,52 +1,76 @@
-# FleetTridi architecture
+# Arquitetura FleetTridi
 
-## Control plane
+## Modelo de conexão
 
-FleetTridi uses a stable device identity and an outbound WebSocket from every Android totem to the central server. The current IP is telemetry, not identity.
+O IP do totem é usado somente no bootstrap inicial. A identidade permanente é um deviceId com token de enrollment.
 
-This is intentional: plain ADB-over-TCP by stored IP does not survive NAT, CGNAT, dynamic addresses or different networks reliably.
+Depois do bootstrap, cada FleetTridi Agent abre um WebSocket de saída até o FleetTridi.Server. Isso funciona muito melhor entre redes, cidades e links com IP dinâmico do que tentar manter ADB TCP aberto na Internet.
 
-## Components
+Admin Windows -> FleetTridi.Server <- WebSocket de saída <- Totens
 
-### FleetTridi.Server
-.NET 8 central control plane. Receives agent connections, stores fleet state, stages APK/files and routes jobs.
+Apenas o servidor central precisa ser alcançável pela Internet.
 
-### FleetTridi.Agent
-Android/Kotlin foreground service. Starts at boot, reconnects automatically and executes maintenance jobs through local root when the owned device provides a working `su`.
+## FleetTridi.Server
 
-Supported v0.1 job primitives:
-- root shell
-- key events
-- tap
-- swipe
-- screenshot
-- arbitrary file delivery
-- APK install/update using `pm install -r -d`
-- telemetry
+Central em .NET 8.
 
-### FleetTridi.Admin
-Windows WPF client compiled as a self-contained `.exe`.
+Responsabilidades da v0.3:
 
-## Enrollment
+- login administrativo;
+- cadastro de dispositivos por ID;
+- persistência em data/devices.json;
+- online/offline e último IP observado;
+- telemetria;
+- fila e histórico de jobs;
+- upload de APK e arquivos;
+- ações individuais e em massa;
+- screenshot remoto;
+- entrega de jobs ao agente por WebSocket;
+- reentrega de jobs pendentes após reconexão.
 
-1. Create a device centrally and obtain `deviceId` + `enrollmentToken`.
-2. Install FleetTridi Agent once on the totem.
-3. Enter server URL, device ID and token.
-4. Save/start the service.
-5. From then on the agent reconnects after boot and network/IP changes.
+O armazenamento em JSON mantém a primeira implantação simples e sem banco externo. A camada pode migrar para PostgreSQL quando a frota exigir sem mudar o protocolo dos totens.
 
-## Root
+## FleetTridi Agent
 
-FleetTridi is a fleet manager, not a universal Android rooting exploit. The specific hardware/firmware must already support root (`su`, engineering firmware, vendor root, etc.). Once root exists, normal fleet operations no longer depend on an attached PC or repeated ADB sessions.
+Aplicativo Android/Kotlin para Android 9+.
 
-## Internet topology
+O agente inicia no boot, mantém foreground service, reconecta sozinho e usa root local somente para operações explícitas de gerenciamento da frota.
 
-```
-Admin.exe -> HTTPS -> FleetTridi.Server <- WSS <- Totem Agent
-```
+Operações implementadas:
 
-Only the central server needs a public endpoint.
+- instalar/atualizar APK;
+- sincronizar criativos;
+- enviar arquivos para áreas FleetTridi;
+- reiniciar TridiAudience;
+- reiniciar o dispositivo;
+- HOME/BACK e keyevents;
+- tap;
+- swipe;
+- screenshot;
+- telemetria de memória, armazenamento, carga, temperatura, uptime e tela.
 
-## Scale path
+O agente não depende de uma sessão ADB após o enrollment.
 
-The v0.1 protocol is already device-ID based and can grow to city/site/device groups. Next production layers are durable database/audit, staged rollouts, hash-based creative synchronization, live video streaming, release channels and rollback.
+## Bootstrap inicial
+
+1. Cadastre o totem no Admin.
+2. O Server gera deviceId e enrollmentToken.
+3. Conecte uma vez por ADB ao IP inicial ou por USB.
+4. O Admin instala FleetTridi Agent.
+5. O Admin grava URL do servidor, ID, token, cidade e local no agente.
+6. O agente inicia e passa a se conectar de saída.
+7. A partir daí o IP inicial deixa de ser necessário para operação normal.
+
+## Tela remota
+
+A v0.3 usa screenshots periódicos para priorizar compatibilidade com a BTV/Android 9.
+
+O painel transforma cliques na imagem em coordenadas reais do Android e envia tap. Setas, Enter, Esc/Home também podem ser encaminhados.
+
+O próximo degrau é substituir screenshots periódicos por stream H.264/MediaCodec com menor latência.
+
+## Escala
+
+Uma atualização em massa é enviada uma vez ao servidor e referenciada por N jobs. Cada totem baixa o arquivo diretamente do servidor.
+
+A arquitetura já permite agrupamento por cidade, ponto e IDs. As próximas camadas de escala são grupos permanentes, rollout gradual, rollback, séries históricas e canais de versão.

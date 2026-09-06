@@ -2,8 +2,9 @@
 <uses-permission android:name="android.permission.INTERNET"/>
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
 <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
-<application android:theme="@style/AppTheme" android:label="FleetTridi Agent" android:allowBackup="false">
+<application android:theme="@style/AppTheme" android:label="FleetTridi Agent" android:allowBackup="false" android:usesCleartextTraffic="true">
 <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
 <service android:name=".FleetService" android:exported="false"/>
 <receiver android:name=".BootReceiver" android:enabled="true" android:exported="true"><intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/></intent-filter></receiver>
+<receiver android:name=".ConfigReceiver" android:enabled="true" android:exported="true"><intent-filter><action android:name="com.tridi.fleet.agent.CONFIG"/></intent-filter></receiver>
 </application></manifest>

@@ -1,0 +1,14 @@
+services:
+  fleettridi:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./fleettridi-data:/app/data
+    environment:
+      FLEETTRIDI_URLS: http://0.0.0.0:8787
+      FLEETTRIDI_ADMIN_USER: nanamicode
+      FLEETTRIDI_ADMIN_PASSWORD: veralucia12
