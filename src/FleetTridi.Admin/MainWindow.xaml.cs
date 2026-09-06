@@ -145,7 +145,9 @@ public partial class MainWindow : Window
 
     void ShowSelected(DeviceRow d)
     {
-        SelectedLabel.Text = $"{d.name} — {d.city} / {d.site}\nID: {d.id}\nIP: {d.lastIp}   Android: {d.androidVersion}   Agente: {d.agentVersion}\nTridiAudience: {d.audienceVersion}   Privilégio: {d.privilegeMode}";
+        SelectedLabel.Text = $"{d.name} — {d.city} / {d.site}\nID: {d.id}\nIP: {d.lastIp}   Android: {d.androidVersion}   Agente: {d.agentVersion}\nTridiAudience: {d.audienceVersion} ({d.audiencePackage})   Privilégio: {d.privilegeMode}";
+        if (!string.IsNullOrWhiteSpace(d.audiencePackage))
+            ReleasePackageBox.Text = d.audiencePackage;
         TelemetryBox.Text = d.telemetry.ValueKind == JsonValueKind.Undefined ? "" : JsonSerializer.Serialize(d.telemetry, new JsonSerializerOptions { WriteIndented = true });
     }
 
@@ -533,7 +535,9 @@ public partial class MainWindow : Window
             await using var fs = File.OpenRead(dlg.FileName);
             form.Add(new StreamContent(fs), "file", Path.GetFileName(dlg.FileName));
             form.Add(new StringContent(version), "version");
-            form.Add(new StringContent("com.tridi.audience"), "packageName");
+            var packageName = ReleasePackageBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(packageName)) packageName = "com.tridi.audience";
+            form.Add(new StringContent(packageName), "packageName");
             form.Add(new StringContent(string.IsNullOrWhiteSpace(ReleaseChannelBox.Text) ? "stable" : ReleaseChannelBox.Text.Trim()), "channel");
             form.Add(new StringContent("Cadastrado pelo FleetTridi Admin"), "notes");
 
@@ -601,6 +605,7 @@ public partial class MainWindow : Window
         public string androidVersion { get; set; } = "";
         public string agentVersion { get; set; } = "";
         public string audienceVersion { get; set; } = "";
+        public string audiencePackage { get; set; } = "";
         public string privilegeMode { get; set; } = "";
         public string updateChannel { get; set; } = "";
         public string agentServerUrl { get; set; } = "";
