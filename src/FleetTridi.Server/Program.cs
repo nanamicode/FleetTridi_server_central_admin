@@ -267,7 +267,7 @@ app.Map("/agent", async c =>
 
     using var ws = await c.WebSockets.AcceptWebSocketAsync();
     var channel = Channel.CreateUnbounded<string>();
-    if (sessions.TryRemove(id, out var old)) old.Writer.TryComplete();
+    if (sessions.TryRemove(id, out var oldChannel)) oldChannel.Writer.TryComplete();
     sessions[id] = channel;
 
     foreach (var state in device.Jobs.Values.Where(j =>
